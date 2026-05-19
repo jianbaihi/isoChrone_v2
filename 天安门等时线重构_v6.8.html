@@ -1,0 +1,2896 @@
+<!--
+ * @Description: 天安门等时线词云 - v6.8 扇区参数可控版
+ * 基于 v6.7，主要新增功能：
+ *   1. 【扇区参数可控】用户可自定义有效总角度、起始角度、扇区间隔
+ *      - 新增 sectorTotalAngle / sectorStartAngle / sectorGap 三个输入控件
+ *      - 扇区参数面板在开启扇区聚类时显示
+ *      - computeCategorySectors 新增 startAngle 参数支持
+ *   2. 保留 v6.7 全部功能不变
+ *      - 类别扇区模式、按类别动态分配扇区角度
+ *      - 修复中心词重复绘制、加载动画优化
+ *   3. 保留 v6.6 全部功能不变
+ *      - 毛玻璃效果、果冻挤压布局
+ *      - 扇区优先螺旋点、内陷检测、两阶段KDE
+-->
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>天安门等时线 - v6.8 扇区参数可控版</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    /* ═══════════════════════════════════════════════════════════════
+       Apple Style Design System
+       ═══════════════════════════════════════════════════════════════ */
+    :root {
+      /* Apple Colors */
+      --apple-bg-light: #f5f5f7;
+      --apple-bg-dark: #1d1d1f;
+      --apple-blue: #0071e3;
+      --apple-blue-hover: #0077ed;
+      --apple-gray: #86868b;
+      --apple-text: #1d1d1f;
+      --apple-text-secondary: #6e6e73;
+      --apple-white: #ffffff;
+      --apple-blur-bg: rgba(255, 255, 255, 0.72);
+      --apple-blur-bg-dark: rgba(29, 29, 31, 0.72);
+      --apple-border: rgba(0, 0, 0, 0.08);
+      --apple-shadow: 0 14px 35px rgba(0, 0, 0, 0.1), 0 4px 10px rgba(0, 0, 0, 0.04);
+      --apple-shadow-hover: 0 20px 45px rgba(0, 0, 0, 0.15), 0 6px 15px rgba(0, 0, 0, 0.06);
+
+      /* Panel */
+      --panel-width: 340px;
+      --panel-collapsed-size: 56px;
+      --transition-jelly: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       Loading Overlay
+       ═══════════════════════════════════════════════════════════════ */
+    #loadingOverlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(245, 245, 247, 0.92);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      z-index: 9999;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 28px;
+      opacity: 0;
+      transition: opacity 0.35s ease;
+    }
+
+    body.dark #loadingOverlay {
+      background: rgba(29, 29, 31, 0.92);
+    }
+
+    #loadingOverlay.active {
+      display: flex;
+      opacity: 1;
+    }
+
+    /* Animated Spinner */
+    .loading-spinner {
+      width: 56px;
+      height: 56px;
+      position: relative;
+    }
+
+    .loading-spinner .spinner-ring {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      border: 4px solid rgba(0, 113, 227, 0.15);
+      border-top-color: var(--apple-blue);
+      border-radius: 50%;
+      animation: spinnerRotate 1s linear infinite;
+    }
+
+    .loading-spinner .spinner-ring:nth-child(2) {
+      width: 80%;
+      height: 80%;
+      top: 10%;
+      left: 10%;
+      border-top-color: var(--apple-blue-hover);
+      animation-duration: 0.8s;
+      animation-direction: reverse;
+    }
+
+    .loading-spinner .spinner-dot {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: var(--apple-blue);
+      border-radius: 50%;
+      animation: dotPulse 1.2s ease-in-out infinite;
+    }
+
+    @keyframes spinnerRotate {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes dotPulse {
+      0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+      50% { transform: translate(-50%, -50%) scale(0.6); opacity: 0.6; }
+    }
+
+    /* Loading Text */
+    .loading-text {
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--apple-text);
+      letter-spacing: -0.01em;
+      text-align: center;
+    }
+
+    body.dark .loading-text {
+      color: var(--apple-white);
+    }
+
+    /* Progress Container */
+    .loading-progress {
+      width: 280px;
+      max-width: 80vw;
+    }
+
+    .progress-bar-container {
+      width: 100%;
+      height: 6px;
+      background: rgba(0, 0, 0, 0.08);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    body.dark .progress-bar-container {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--apple-blue), var(--apple-blue-hover));
+      border-radius: 3px;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    /* Progress Info */
+    .progress-info {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--apple-text-secondary);
+    }
+
+    body.dark .progress-info {
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    .progress-stage {
+      font-weight: 500;
+    }
+
+    .progress-percent {
+      font-variant-numeric: tabular-nums;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      width: 100vw;
+      background: var(--apple-bg-light);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+      overflow: hidden;
+      transition: background 0.5s var(--transition-jelly);
+    }
+
+    body.dark {
+      background: var(--apple-bg-dark);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       Main Layout Container
+       ═══════════════════════════════════════════════════════════════ */
+    #app {
+      display: flex;
+      width: 100vw;
+      height: 100vh;
+      position: relative;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       Canvas Area - 85% → 100% when collapsed
+       ═══════════════════════════════════════════════════════════════ */
+    #mainCanvas {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      padding: 20px;
+      transition: padding 0.5s var(--transition-jelly);
+    }
+
+    body.panel-open #mainCanvas {
+      padding-right: calc(var(--panel-width) + 20px);
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      cursor: grab;
+      border-radius: 20px;
+      user-select: none;
+      -webkit-user-select: none;
+      transition: all 0.5s var(--transition-jelly);
+    }
+
+    svg text {
+      pointer-events: none;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       Control Panel - Apple Style
+       ═══════════════════════════════════════════════════════════════ */
+    #controlPanel {
+      position: fixed;
+      right: 20px;
+      top: 50%;
+      transform: translateY(-50%) translateX(calc(100% + 20px));
+      width: var(--panel-width);
+      height: calc(100vh - 40px);
+      min-height: 360px;
+      padding: 0;
+      z-index: 100;
+      background: var(--apple-blur-bg);
+      backdrop-filter: saturate(180%) blur(40px);
+      -webkit-backdrop-filter: saturate(180%) blur(40px);
+      border: 1px solid var(--apple-border);
+      border-radius: 24px;
+      box-shadow: var(--apple-shadow);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.6s var(--transition-jelly),
+                  box-shadow 0.4s ease,
+                  border-radius 0.5s var(--transition-jelly);
+    }
+
+    #controlPanel:hover {
+      box-shadow: var(--apple-shadow-hover);
+    }
+
+    /* Panel Open State */
+    body.panel-open #controlPanel {
+      transform: translateY(-50%) translateX(0);
+      border-radius: 24px;
+    }
+
+    /* Panel Collapsed State - Small Circle */
+    body.panel-collapsed #controlPanel {
+      width: var(--panel-collapsed-size) !important;
+      height: var(--panel-collapsed-size) !important;
+      min-width: var(--panel-collapsed-size) !important;
+      min-height: var(--panel-collapsed-size) !important;
+      max-width: var(--panel-collapsed-size) !important;
+      max-height: var(--panel-collapsed-size) !important;
+      border-radius: 50% !important;
+      transform: translateY(-50%);
+      cursor: pointer;
+    }
+
+    body.panel-collapsed #controlPanel:hover {
+      transform: translateY(-50%) scale(1.05);
+    }
+
+    body.panel-open #controlPanel.collapsed {
+      border-radius: 24px;
+    }
+
+    /* Panel Header */
+    .panel-header {
+      padding: 20px 20px 16px 20px;
+      border-bottom: 1px solid var(--apple-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .panel-header h3 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--apple-text);
+      letter-spacing: -0.02em;
+    }
+
+    .panel-header .subtitle {
+      font-size: 13px;
+      color: var(--apple-text-secondary);
+      margin-top: 3px;
+    }
+
+    body.dark .panel-header h3 {
+      color: var(--apple-white);
+    }
+
+    body.dark .panel-header .subtitle {
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    body.dark .panel-header {
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+
+    /* Collapse Button */
+    #collapseBtn {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(0, 0, 0, 0.05);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.25s ease;
+      color: var(--apple-text-secondary);
+    }
+
+    #collapseBtn:hover {
+      background: rgba(0, 0, 0, 0.1);
+      transform: scale(1.1);
+    }
+
+    #collapseBtn svg {
+      width: 16px;
+      height: 16px;
+      transition: transform 0.3s var(--transition-jelly);
+    }
+
+    /* Panel Content */
+    .panel-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px 28px 20px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+    }
+
+    .panel-content::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .panel-content::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .panel-content::-webkit-scrollbar-thumb {
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 3px;
+    }
+
+    /* Panel Footer */
+    .panel-footer {
+      padding: 12px 20px;
+      border-top: 1px solid var(--apple-border);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .panel-footer .btn-row {
+      display: flex;
+      gap: 8px;
+      width: 100%;
+    }
+
+    .panel-footer .btn-row .glass-btn {
+      flex: 1;
+      min-width: 0;
+    }
+
+    body.dark .panel-footer {
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+
+    /* Collapsed Icon */
+    #collapsedIcon {
+      display: none;
+      width: 100%;
+      height: 100%;
+      align-items: center;
+      justify-content: center;
+    }
+
+    body.panel-collapsed #collapsedIcon {
+      display: flex;
+      animation: iconPop 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+    }
+
+    #collapsedIcon svg {
+      width: 24px;
+      height: 24px;
+      color: var(--apple-blue);
+    }
+
+    @keyframes iconPop {
+      0% { transform: scale(0); opacity: 0; }
+      60% { transform: scale(1.1); }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    /* Hide elements when collapsed */
+    body.panel-collapsed .panel-header,
+    body.panel-collapsed .panel-content,
+    body.panel-collapsed .panel-footer {
+      display: none;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       Form Elements - Apple Style
+       ═══════════════════════════════════════════════════════════════ */
+    .panel-label {
+      font-size: 13px;
+      color: var(--apple-text-secondary);
+      margin: 14px 0 6px 0;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+    }
+
+    .panel-label.section {
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid var(--apple-border);
+      color: var(--apple-blue);
+      font-weight: 600;
+    }
+
+    .hint-text {
+      font-size: 12px;
+      color: var(--apple-text-secondary);
+      margin: 4px 0 8px 0;
+      line-height: 1.5;
+      opacity: 0.8;
+    }
+
+    /* Apple Buttons */
+    .glass-btn {
+      background: rgba(0, 0, 0, 0.04);
+      color: var(--apple-text);
+      border: none;
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      width: 100%;
+      text-align: center;
+      letter-spacing: -0.01em;
+    }
+
+    .glass-btn:hover {
+      background: rgba(0, 0, 0, 0.08);
+      transform: scale(1.01);
+    }
+
+    .glass-btn:active {
+      transform: scale(0.99);
+    }
+
+    .glass-btn.danger {
+      background: rgba(255, 69, 58, 0.1);
+      color: #ff3b30;
+      font-size: 13px;
+      padding: 10px 14px;
+    }
+
+    .glass-btn.danger:hover {
+      background: rgba(255, 69, 58, 0.18);
+    }
+
+    /* Apple Input */
+    .time-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 6px 0;
+    }
+
+    .time-input-row input[type="number"],
+    .time-input-row input[type="text"],
+    .time-input-row select {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1px solid var(--apple-border);
+      border-radius: 10px;
+      background: rgba(0, 0, 0, 0.03);
+      font-size: 14px;
+      color: var(--apple-text);
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+
+    .time-input-row input[type="number"]:focus,
+    .time-input-row input[type="text"]:focus,
+    .time-input-row select:focus {
+      outline: none;
+      border-color: var(--apple-blue);
+      background: rgba(0, 113, 227, 0.05);
+    }
+
+    .time-input-row .add-btn {
+      padding: 10px 16px;
+      background: var(--apple-blue);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .time-input-row .add-btn:hover {
+      background: var(--apple-blue-hover);
+      transform: scale(1.02);
+    }
+
+    /* Dark mode for inputs */
+    body.dark .time-input-row input[type="number"],
+    body.dark .time-input-row input[type="text"],
+    body.dark .time-input-row select {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--apple-white);
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+
+    body.dark .time-input-row select option {
+      background: var(--apple-bg-dark);
+      color: var(--apple-white);
+    }
+
+    body.dark .time-input-row .add-btn {
+      background: var(--apple-blue);
+    }
+
+    body.dark .glass-btn {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--apple-white);
+    }
+
+    body.dark .glass-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    body.dark .panel-label {
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    body.dark .hint-text {
+      color: rgba(255, 255, 255, 0.5);
+    }
+
+    /* Isochrone List Items */
+    .isochrone-item {
+      display: flex;
+      align-items: center;
+      padding: 10px 12px;
+      margin: 6px 0;
+      background: rgba(0, 0, 0, 0.03);
+      border-radius: 12px;
+      font-size: 13px;
+      color: var(--apple-text);
+      transition: all 0.25s ease;
+      gap: 10px;
+    }
+
+    .isochrone-item:hover {
+      background: rgba(0, 0, 0, 0.06);
+    }
+
+    body.dark .isochrone-item {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--apple-white);
+    }
+
+    body.dark .isochrone-item:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .iso-color-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .iso-index-badge {
+      font-size: 10px;
+      font-weight: 600;
+      color: white;
+      background: var(--apple-blue);
+      border-radius: 5px;
+      padding: 2px 6px;
+      flex-shrink: 0;
+    }
+
+    .iso-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .iso-time-text {
+      font-weight: 600;
+      font-size: 13px;
+      line-height: 18px;
+      white-space: nowrap;
+    }
+
+    .iso-meta {
+      font-size: 11px;
+      color: var(--apple-text-secondary);
+      line-height: 14px;
+    }
+
+    body.dark .iso-meta {
+      color: rgba(255, 255, 255, 0.5);
+    }
+
+    .iso-del-btn {
+      flex-shrink: 0;
+      margin-left: auto;
+      background: rgba(255, 69, 58, 0.1);
+      color: #ff3b30;
+      border: none;
+      border-radius: 6px;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      line-height: 1;
+      padding: 0;
+    }
+
+    .iso-del-btn:hover {
+      background: rgba(255, 69, 58, 0.2);
+      transform: scale(1.1);
+    }
+
+    .iso-empty-hint {
+      text-align: center;
+      color: var(--apple-text-secondary);
+      font-size: 12px;
+      padding: 14px 0 6px;
+      opacity: 0.6;
+    /* } */
+      background-color: #1C1C28;
+    }
+
+    body.dark #controlPanel {
+      background: rgba(28, 28, 40, 0.78);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    }
+
+    body.dark #controlPanel h3 {
+      color: #eee;
+      border-bottom-color: rgba(255, 255, 255, 0.12);
+    }
+
+    body.dark .panel-label {
+      color: #aaa;
+    }
+
+    body.dark .panel-label.section {
+      color: #7BA3D9;
+      border-top-color: rgba(255, 255, 255, 0.08);
+    }
+
+    body.dark .glass-btn {
+      background: rgba(255, 255, 255, 0.15);
+      color: #eee;
+      border-color: rgba(255, 255, 255, 0.25);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+
+    body.dark .glass-btn:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+
+    body.dark .time-input-row input[type="number"] {
+      background: rgba(0, 0, 0, 0.3);
+      border-color: rgba(255, 255, 255, 0.15);
+      color: #eee;
+    }
+
+    body.dark .isochrone-item {
+      background: rgba(255, 255, 255, 0.1);
+      color: #ddd;
+    }
+
+    body.dark .hint-text {
+      color: #666;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        transform: scale(0.95);
+        opacity: 1;
+      }
+
+      50% {
+        transform: scale(1.05);
+        opacity: 0.9;
+      }
+    }
+
+    /* ===== 折叠/展开分区样式 ===== */
+    .section-header {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      margin-top: 16px;
+      margin-bottom: 6px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(0, 0, 0, 0.06);
+      gap: 6px;
+    }
+
+    .section-header .section-title {
+      flex: 1;
+      font-size: 13px;
+      color: #4A6FA5;
+      font-weight: 600;
+    }
+
+    .section-header .section-arrow {
+      font-size: 11px;
+      color: #4A6FA5;
+      transition: transform 0.25s ease;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+
+    .section-header.collapsed .section-arrow {
+      transform: rotate(-90deg);
+    }
+
+    .section-header:hover .section-title,
+    .section-header:hover .section-arrow {
+      color: #2a5a9a;
+    }
+
+    body.dark .section-header .section-title,
+    body.dark .section-header .section-arrow {
+      color: #7BA3D9;
+    }
+
+    body.dark .section-header {
+      border-top-color: rgba(255, 255, 255, 0.08);
+    }
+
+    .section-body {
+      /* 展开时正常显示，由面板自身滚动；收起时直接隐藏 */
+      transition: opacity 0.2s ease;
+    }
+
+    .section-body.collapsed {
+      display: none;
+    }
+
+    /* ===== 当前等时线区块折叠 ===== */
+    .iso-section-header {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      margin: 12px 0 4px 0;
+      gap: 6px;
+    }
+
+    .iso-section-header .iso-section-title {
+      flex: 1;
+      font-size: 13px;
+      color: #666;
+      font-weight: 500;
+    }
+
+    .iso-section-header .iso-section-arrow {
+      font-size: 11px;
+      color: #999;
+      transition: transform 0.25s ease;
+      flex-shrink: 0;
+    }
+
+    .iso-section-header.collapsed .iso-section-arrow {
+      transform: rotate(-90deg);
+    }
+
+    body.dark .iso-section-header .iso-section-title {
+      color: #aaa;
+    }
+
+    body.dark .iso-section-header .iso-section-arrow {
+      color: #666;
+    }
+
+    /* 等时线列表：自然高度显示，由面板整体滚动 */
+    /* 等时线列表：自然高度显示，由面板整体滚动 */
+    .isochrone-list {
+      display: block;
+      margin-top: 6px;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      overflow: auto;
+      min-height: 120px;
+      transition: opacity 0.2s ease;
+    }
+
+    .isochrone-list.iso-body-collapsed {
+      display: none;
+      opacity: 0;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay">
+    <div class="loading-spinner">
+      <div class="spinner-ring"></div>
+      <div class="spinner-ring"></div>
+      <div class="spinner-dot"></div>
+    </div>
+    <div class="loading-text">正在努力绘制中，请稍等片刻...</div>
+    <div class="loading-progress">
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="progress-info">
+        <span class="progress-stage" id="progressStage">准备中</span>
+        <span class="progress-percent" id="progressPercent">0%</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="app">
+    <div id="mainCanvas">
+      <svg></svg>
+    </div>
+
+    <div id="controlPanel">
+      <div class="panel-header">
+        <div>
+          <h3>等时线控制</h3>
+          <div class="subtitle">Isochrone Control</div>
+        </div>
+        <button id="collapseBtn" title="收起面板">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 6 15 12 9 18"></polyline>
+          </svg>
+        </button>
+      </div>
+
+      <div id="collapsedIcon" title="展开面板">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9"/>
+          <circle cx="12" cy="12" r="4"/>
+          <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
+
+      <div class="panel-content">
+        <!-- 添加等时线（分钟） -->
+        <div class="panel-label">添加等时线（分钟）</div>
+        <div class="time-input-row">
+          <input type="number" id="timeInput" placeholder="如: 5" min="1" />
+          <button class="add-btn" id="addIsochroneBtn">添加</button>
+        </div>
+
+        <!-- 当前等时线（可折叠） -->
+        <div class="iso-section-header" id="isoSectionHeader">
+          <span class="iso-section-title">当前等时线</span>
+          <span class="iso-section-arrow">▼</span>
+        </div>
+        <div class="isochrone-list" id="isochroneList"></div>
+
+        <!-- ===== 基础设置 ===== -->
+        <div class="section-header" id="hdr-basic">
+          <span class="section-title">⚙️ 基础设置</span>
+          <span class="section-arrow">▼</span>
+        </div>
+        <div class="section-body" id="body-basic">
+          <div class="panel-label">每层最大词数</div>
+          <div class="time-input-row">
+            <input type="number" id="maxWordsInput" value="15" min="10" max="100" />
+          </div>
+          <div class="panel-label">层间距（px）</div>
+          <div class="time-input-row">
+            <input type="number" id="layerPaddingInput" value="5" min="0" max="30" step="5" />
+          </div>
+          <div class="hint-text" style="margin-top: 12px;">🗂️ 类别扇区模式：同类词在同一扇区内聚类摆放</div>
+          <div class="toggle-row">
+            <label class="toggle-switch">
+              <input type="checkbox" id="sectorClusterToggle" />
+              <span class="toggle-slider"></span>
+            </label>
+            <span class="toggle-label">开启类别扇区模式</span>
+          </div>
+          <!-- v6.8 新增：扇区参数控制 -->
+          <div id="sectorParams" style="display:none; margin-top:12px;">
+            <div class="panel-label">有效总角度（°，默认360）</div>
+            <div class="time-input-row">
+              <input type="number" id="sectorTotalAngle" value="360" min="30" max="360" step="10" />
+            </div>
+            <div class="panel-label">起始角度（°，0=正右，顺时针增加）</div>
+            <div class="time-input-row">
+              <input type="number" id="sectorStartAngle" value="0" min="0" max="360" step="5" />
+            </div>
+            <div class="panel-label">扇区间隔（°）</div>
+            <div class="time-input-row">
+              <input type="number" id="sectorGap" value="10" min="0" max="60" step="2" />
+            </div>
+            <div class="hint-text">提示：总角度 &lt; 360° 时，扇区只会占据部分圆环。</div>
+          </div>
+        </div>
+
+    <!-- ===== 阿基米德螺旋参数（默认展开） ===== -->
+    <div class="section-header" id="hdr-spiral">
+      <span class="section-title">🌀 阿基米德螺旋参数</span>
+      <span class="section-arrow">▼</span>
+    </div>
+    <div class="section-body" id="body-spiral">
+      <div class="hint-text">这些参数同时影响词语排布和内陷检测的椭圆形状</div>
+      <div class="panel-label">X 轴拉伸比 ratio（椭圆横向比例）</div>
+      <div class="time-input-row">
+        <input type="number" id="spiralRatio" value="1.6" min="0.5" max="4.0" step="0.1" />
+      </div>
+      <div class="panel-label">螺旋步进 step（越大词间距越大）</div>
+      <div class="time-input-row">
+        <input type="number" id="spiralStep" value="0.15" min="0.05" max="1.0" step="0.05" />
+      </div>
+      <div class="panel-label">螺距参数 b（每圈扩张量）</div>
+      <div class="time-input-row">
+        <input type="number" id="spiralB" value="0.25" min="0.05" max="2.0" step="0.05" />
+      </div>
+    </div>
+
+    <!-- ===== 径向内陷检测（默认收起） ===== -->
+    <div class="section-header collapsed" id="hdr-indent">
+      <span class="section-title">🎯 径向内陷检测（椭圆感知）</span>
+      <span class="section-arrow">▼</span>
+    </div>
+    <div class="section-body collapsed" id="body-indent">
+      <div class="hint-text">检测两层等时线间环宽变化，自动生成虚拟点修正</div>
+      <div class="time-input-row" style="align-items:center;gap:8px;">
+        <label style="font-size:13px;color:#666;flex:1;">启用内陷检测</label>
+        <input type="checkbox" id="indentDetectToggle" checked
+          style="width:16px;height:16px;cursor:pointer;accent-color:#e74c3c;" />
+      </div>
+      <div class="time-input-row" style="align-items:center;gap:8px;">
+        <label style="font-size:13px;color:#666;flex:1;">显示辅助调试信息</label>
+        <input type="checkbox" id="showDebugInfoToggle"
+          style="width:16px;height:16px;cursor:pointer;accent-color:#e67e22;" />
+      </div>
+      <div class="time-input-row" style="align-items:center;gap:8px;">
+        <label style="font-size:13px;color:#666;flex:1;">显示虚拟点</label>
+        <input type="checkbox" id="showVirtualPointsToggle" checked
+          style="width:16px;height:16px;cursor:pointer;accent-color:#e74c3c;" />
+      </div>
+      <div class="panel-label">虚拟点网格间距（px，越小越密）</div>
+      <div class="time-input-row">
+        <input type="number" id="virtualPointStep" value="4" min="1" max="40" step="2" />
+      </div>
+      <div class="time-input-row" style="align-items:center;gap:8px;">
+        <label style="font-size:13px;color:#666;flex:1;">显示采样射线</label>
+        <input type="checkbox" id="showRaysToggle" checked
+          style="width:16px;height:16px;cursor:pointer;accent-color:#e67e22;" />
+      </div>
+      <div class="time-input-row" style="align-items:center;gap:8px;">
+        <label style="font-size:13px;color:#666;flex:1;">显示环宽折线图</label>
+        <input type="checkbox" id="showWidthChartToggle" checked
+          style="width:16px;height:16px;cursor:pointer;accent-color:#27ae60;" />
+      </div>
+      <div class="panel-label">采样角度数（精度，建议 72～360）</div>
+      <div class="time-input-row">
+        <input type="number" id="sampleAngles" value="180" min="36" max="720" step="36" />
+      </div>
+      <div class="panel-label">内陷阈值（环宽 / 均值 &lt; 此值 → 判定内陷）</div>
+      <div class="time-input-row">
+        <input type="number" id="indentThreshold" value="0.75" min="0.1" max="1.5" step="0.05" />
+      </div>
+      <div class="panel-label">内陷合并角度（°，小于此角度的相邻区合并）</div>
+      <div class="time-input-row">
+        <input type="number" id="mergeAngleDeg" value="60" min="5" max="60" step="5" />
+      </div>
+      <div class="panel-label">标签放置系数（0=紧贴内圈，1=环中间）</div>
+      <div class="time-input-row">
+        <input type="number" id="labelPlaceRatio" value="1" min="0.0" max="1.0" step="0.05" />
+      </div>
+    </div>
+
+    <!-- ===== 曲率+宽高比过滤（默认收起） ===== -->
+    <div class="section-header collapsed" id="hdr-curvature">
+      <span class="section-title">📐 曲率+宽高比过滤</span>
+      <span class="section-arrow">▼</span>
+    </div>
+    <div class="section-body collapsed" id="body-curvature">
+      <div class="hint-text">避免误判画布边缘平行段</div>
+      <div class="time-input-row" style="align-items:center;gap:8px;">
+        <label style="font-size:13px;color:#666;flex:1;">启用曲率过滤</label>
+        <input type="checkbox" id="curvatureFilterToggle" checked style="width:16px;height:16px;cursor:pointer;" />
+      </div>
+      <div class="panel-label">曲率阈值(0~1,越小越严)</div>
+      <div class="time-input-row">
+        <input type="number" id="curvatureThreshold" value="0.01" min="0.01" max="0.5" step="0.01" />
+      </div>
+      <div class="panel-label">宽高比阈值(>此值=狭长)</div>
+      <div class="time-input-row">
+        <input type="number" id="aspectRatioThreshold" value="2.0" min="1.0" max="5.0" step="0.1" />
+      </div>
+    </div>
+
+    <!-- ===== 等时线精细度（默认展开） ===== -->
+    <div class="section-header" id="hdr-kde">
+      <span class="section-title">🎛 等时线精细度</span>
+      <span class="section-arrow">▼</span>
+    </div>
+    <div class="section-body" id="body-kde">
+      <div class="hint-text">Bandwidth小=贴合，Thresholds大=精细</div>
+      <div class="panel-label">Bandwidth(贴合度)</div>
+      <div class="time-input-row">
+        <input type="number" id="kdeBandwidth" value="45" min="10" max="150" step="5" />
+      </div>
+      <div class="panel-label">Thresholds(精细度)</div>
+      <div class="time-input-row">
+        <input type="number" id="kdeThresholds" value="65" min="10" max="150" step="5" />
+      </div>
+    </div>
+
+    <!-- ===== 时间刻度标签（默认展开） ===== -->
+    <div class="section-header" id="hdr-timelabel">
+      <span class="section-title">🕐 时间刻度标签</span>
+      <span class="section-arrow">▼</span>
+    </div>
+    <div class="section-body" id="body-timelabel">
+      <div class="hint-text">用逗号分隔角度（0=正右，90=正下，180=正左，270=正上）。留空则使用默认 8 方向。</div>
+      <div class="panel-label">自定义方向角度列表（°）</div>
+      <div class="time-input-row">
+        <input type="text" id="timeLabelAngles" placeholder="如: 0,90,180,270"
+           />
+      </div>
+      <div class="panel-label">标签旋转模式</div>
+      <div class="time-input-row">
+        <select id="timeLabelRotMode">
+          <option value="tangent">切线（跟随等时线弧度）</option>
+          <option value="horizontal">水平（始终横排）</option>
+          <option value="radial">径向（沿射线方向）</option>
+        </select>
+      </div>
+      <div class="panel-label">标签径向偏移（px，正值向外推）</div>
+      <div class="time-input-row">
+        <input type="number" id="timeLabelOffset" value="0" min="-100" max="200" step="5"
+           />
+      </div>
+    </div>
+
+    <!-- ===== 词云固定模式（默认收起） ===== -->
+    <div class="section-header collapsed" id="hdr-freeze">
+      <span class="section-title">🔒 词云固定模式</span>
+      <span class="section-arrow">▼</span>
+    </div>
+    <div class="section-body collapsed" id="body-freeze">
+      <div class="hint-text">勾选后记忆当前词云组成，取消勾选后恢复随机刷新，方便参数对比。</div>
+      <div class="time-input-row" style="align-items:center;gap:8px;">
+        <label style="font-size:13px;color:#666;flex:1;">固定当前词云</label>
+        <input type="checkbox" id="freezeWordcloudToggle"
+          style="width:16px;height:16px;cursor:pointer;accent-color:#4A6FA5;" />
+      </div>
+    </div>
+
+    <!-- ===== 词云词条定向扇区（默认收起） ===== -->
+    <div class="section-header collapsed" id="hdr-sector">
+      <span class="section-title">🧭 词云词条定向扇区</span>
+      <span class="section-arrow">▼</span>
+    </div>
+    <div class="section-body collapsed" id="body-sector">
+      <div class="hint-text">启用后，外圈词条优先放置在指定扇区内，不够再从全域补充。</div>
+      <div class="time-input-row" style="align-items:center;gap:8px;">
+        <label style="font-size:13px;color:#666;flex:1;">启用扇区优先摆放</label>
+        <input type="checkbox" id="sectorModeToggle"
+          style="width:16px;height:16px;cursor:pointer;accent-color:#4A6FA5;" />
+      </div>
+      <div class="panel-label">扇区中心角（°，0=正右，逆时针）</div>
+      <div class="time-input-row">
+        <input type="number" id="sectorCenterAngle" value="270" min="0" max="360" step="15"
+           />
+      </div>
+      <div class="panel-label">扇区半角宽度（°，越大范围越广）</div>
+      <div class="time-input-row">
+        <input type="number" id="sectorHalfAngle" value="60" min="10" max="180" step="10"
+           />
+      </div>
+      <div class="panel-label">扇区优先权重（0~1，越高越集中在扇区）</div>
+      <div class="hint-text">控制螺旋候选点中扇区内点的占比。1 = 全部从扇区内取，0.5 = 一半。</div>
+      <div class="time-input-row">
+        <input type="number" id="sectorWeight" value="0.7" min="0" max="1" step="0.05"
+           />
+      </div>
+    </div>
+
+    <div class="panel-footer">
+      <div class="btn-row">
+        <button class="glass-btn" id="redrawBtn">重新绘制</button>
+      </div>
+      <div class="btn-row">
+        <button class="glass-btn danger" id="clearBtn">清除</button>
+        <button class="glass-btn" id="toggleBgBtn">🌓</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+  <script>
+    // ==================== 全局数据 ====================
+    let HUBUlocation = [];
+    let centerLocation = "天安门";
+    let isochroneTimes = [15, 30];
+    let sunMode = true;
+
+    // v6.4 词云固定模式
+    let freezeWordcloudEnabled = false;
+    let frozenWordcloudData = null; // 存储固定的词云数据
+
+    const lightColors = {
+      color1: "#fe8765", color2: "#69b0e8", color3: "#8bccb1",
+      color4: "#C17CFF", color5: "#FF9A8B",
+      color_center: "#002855", bg: "#f5f7fa"
+    };
+    const darkColors = {
+      color1: "#5DA8FF", color2: "#58C4B8", color3: "#FFD166",
+      color4: "#BB86FC", color5: "#FF6B6B",
+      color_center: "#FFFFFF", bg: "#1C1C28"
+    };
+    let currentColors = { ...lightColors };
+
+    // ==================== 加载数据 ====================
+
+    d3.csv("./TianAnmen_plus.csv").then((data) => {
+      let rawData = data.map((d) => ({
+        text: d.text, time: +d.time, rating: +d.rating, category: d.category,
+      }));
+      // 如果固定模式关闭，正常随机打乱；固定模式开启且有冻结数据时使用冻结数据
+      if (!freezeWordcloudEnabled || !frozenWordcloudData) {
+        rawData = rawData.sort(() => Math.random() - 0.5);
+      }
+      HUBUlocation = rawData;
+      HUBUlocation.forEach((d) => { if (d.text === centerLocation) d.rating = 6; });
+      // CSV 加载后重新渲染列表（更新词数统计），然后绘图
+      scheduleRedraw(() => { renderIsochroneList(); _fullRedrawCore(); });
+    }).catch((err) => {
+      console.warn('[警告] CSV 加载失败，仅显示控制面板:', err);
+    });
+
+    function getFontSize(rating) {
+      if (rating === 6) return 100;
+      if (rating >= 4.5) return 40;
+      if (rating >= 3.0) return 30;
+      return 20;
+    }
+    function getFontWeight(rating) {
+      if (rating >= 4.5) return "bold";
+      if (rating >= 3.0) return "normal";
+      return "lighter";
+    }
+    function filterBalancedLocations(centerLocation, data, timeMin, timeMax) {
+      let filtered = data.filter(item => item.time > timeMin && item.time <= timeMax);
+      // 排除中心词，避免重复绘制
+      filtered = filtered.filter(item => item.text !== centerLocation);
+      const seen = new Set();
+      filtered = filtered.filter(item => {
+        if (seen.has(item.text)) return false;
+        seen.add(item.text);
+        return true;
+      });
+      return filtered;
+    }
+
+    let uiInited = false;
+    function initUI() {
+      renderIsochroneList();
+      if (uiInited) return;
+      uiInited = true;
+      document.getElementById('addIsochroneBtn').addEventListener('click', addIsochrone);
+      document.getElementById('redrawBtn').addEventListener('click', () => scheduleRedraw(_fullRedrawCore));
+      document.getElementById('clearBtn').addEventListener('click', () => { isochroneTimes = []; renderIsochroneList(); scheduleRedraw(_fullRedrawCore); });
+      document.getElementById('toggleBgBtn').addEventListener('click', toggleBackground);
+
+      // v6.8 新增：扇区参数控制显示/隐藏
+      const sectorClusterToggle = document.getElementById('sectorClusterToggle');
+      const sectorParams = document.getElementById('sectorParams');
+      if (sectorClusterToggle && sectorParams) {
+        sectorClusterToggle.addEventListener('change', () => {
+          sectorParams.style.display = sectorClusterToggle.checked ? 'block' : 'none';
+        });
+      }
+
+      // ===== 折叠/展开逻辑 =====
+      // 各分区 header → body 映射
+      const sections = [
+        { hdr: 'hdr-basic', body: 'body-basic', collapsed: false },
+        { hdr: 'hdr-spiral', body: 'body-spiral', collapsed: false },
+        { hdr: 'hdr-indent', body: 'body-indent', collapsed: true },
+        { hdr: 'hdr-curvature', body: 'body-curvature', collapsed: true },
+        { hdr: 'hdr-kde', body: 'body-kde', collapsed: false },
+        { hdr: 'hdr-timelabel', body: 'body-timelabel', collapsed: false },
+        { hdr: 'hdr-freeze', body: 'body-freeze', collapsed: true },
+        { hdr: 'hdr-sector', body: 'body-sector', collapsed: true },
+      ];
+      sections.forEach(({ hdr, body }) => {
+        const hdrEl = document.getElementById(hdr);
+        const bodyEl = document.getElementById(body);
+        if (!hdrEl || !bodyEl) return;
+        hdrEl.addEventListener('click', () => {
+          const isCollapsed = bodyEl.classList.contains('collapsed');
+          if (isCollapsed) {
+            bodyEl.classList.remove('collapsed');
+            hdrEl.classList.remove('collapsed');
+          } else {
+            bodyEl.classList.add('collapsed');
+            hdrEl.classList.add('collapsed');
+          }
+        });
+      });
+
+      // 当前等时线列表折叠
+      const isoHdr = document.getElementById('isoSectionHeader');
+      const isoList = document.getElementById('isochroneList');
+      if (isoHdr && isoList) {
+        isoHdr.addEventListener('click', () => {
+          const isCollapsed = isoList.classList.contains('iso-body-collapsed');
+          if (isCollapsed) {
+            isoList.classList.remove('iso-body-collapsed');
+            isoHdr.classList.remove('collapsed');
+          } else {
+            isoList.classList.add('iso-body-collapsed');
+            isoHdr.classList.add('collapsed');
+          }
+        });
+      }
+
+      // ===== 控制面板收起/展开 =====
+      const collapseBtn = document.getElementById('collapseBtn');
+      const collapsedIcon = document.getElementById('collapsedIcon');
+
+      function collapsePanel() {
+        document.body.classList.remove('panel-open');
+        document.body.classList.add('panel-collapsed');
+        collapseBtn.querySelector('svg').style.transform = 'rotate(180deg)';
+      }
+
+      function expandPanel() {
+        document.body.classList.remove('panel-collapsed');
+        document.body.classList.add('panel-open');
+        collapseBtn.querySelector('svg').style.transform = 'rotate(0deg)';
+      }
+
+      collapseBtn.addEventListener('click', collapsePanel);
+      collapsedIcon.addEventListener('click', expandPanel);
+
+      // 默认展开面板
+      document.body.classList.add('panel-open');
+    }
+
+    function init() {
+      initUI();
+      fullRedraw();
+    }
+
+    // 立即初始化 UI（脚本在 body 底部，DOM 已就绪）
+    initUI();
+
+    function renderIsochroneList() {
+      const list = document.getElementById('isochroneList');
+      // 安全清空
+      while (list.firstChild) list.removeChild(list.firstChild);
+      const sorted = [...isochroneTimes].sort((a, b) => a - b);
+
+      if (sorted.length === 0) {
+        const hint = document.createElement('div');
+        hint.className = 'iso-empty-hint';
+        hint.textContent = '尚未添加等时线';
+        list.appendChild(hint);
+        return;
+      }
+
+      // 等时线颜色序列（与可视化中的等时线颜色对应：第0条蓝色，后续层颜色加深）
+      const isoColors = [
+        "#A7D8FF", "#79C1FF", "#4A90E2", "#2672CA", "#1554A8",
+        "#0D3D84", "#093068", "#062550"
+      ];
+
+      sorted.forEach((time, idx) => {
+        let count = 0;
+        if (idx === 0) {
+          count = HUBUlocation.filter(d => d.time > 0 && d.time <= time).length;
+        } else {
+          count = HUBUlocation.filter(d => d.time > sorted[idx - 1] && d.time <= time).length;
+        }
+        const color = isoColors[Math.min(idx, isoColors.length - 1)];
+        const prevTime = idx === 0 ? 0 : sorted[idx - 1];
+        const rangeLabel = idx === 0 ? `0 ~ ${time}` : `${prevTime} ~ ${time}`;
+
+        const item = document.createElement('div');
+        item.className = 'isochrone-item';
+
+        const dot = document.createElement('div');
+        dot.className = 'iso-color-dot';
+        dot.style.background = color;
+
+        const badge = document.createElement('span');
+        badge.className = 'iso-index-badge';
+        badge.textContent = `L${idx + 1}`;
+        badge.style.background = color;
+        badge.style.color = idx <= 1 ? '#1a3a6c' : '#fff';
+
+        const info = document.createElement('div');
+        info.className = 'iso-info';
+        info.innerHTML = `<span class="iso-time-text">${time} 分钟</span>
+          <span class="iso-meta">${rangeLabel} min · ${count} 个地点</span>`;
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'iso-del-btn';
+        delBtn.title = `删除 ${time} min 等时线`;
+        delBtn.textContent = '×';
+        delBtn.addEventListener('click', () => removeIsochrone(time));
+
+        item.appendChild(dot);
+        item.appendChild(badge);
+        item.appendChild(info);
+        item.appendChild(delBtn);
+        list.appendChild(item);
+      });
+    }
+    function addIsochrone() {
+      const time = parseInt(document.getElementById('timeInput').value);
+      if (!time || time < 1) { alert('请输入有效的分钟数'); return; }
+      if (isochroneTimes.includes(time)) { alert('该等时线已存在'); return; }
+      isochroneTimes.push(time);
+      document.getElementById('timeInput').value = '';
+      renderIsochroneList(); scheduleRedraw(_fullRedrawCore);
+    }
+
+    function removeIsochrone(time) {
+      isochroneTimes = isochroneTimes.filter(t => t !== time);
+      renderIsochroneList(); scheduleRedraw(_fullRedrawCore);
+    }
+    function clearAll() {
+      isochroneTimes = [];
+      renderIsochroneList();
+      scheduleRedraw(_fullRedrawCore);
+    }
+    function toggleBackground() {
+      sunMode = !sunMode;
+      if (sunMode) {
+        document.body.classList.remove('dark');
+        currentColors = { ...lightColors };
+      } else {
+        document.body.classList.add('dark');
+        currentColors = { ...darkColors };
+      }
+      fullRedraw();
+    }
+
+    // ==================== 加载动画控制 ====================
+    /**
+     * v6.6 修复：showLoading 确保 loading 立即可见
+     * 1. 显式设置 display: flex 和 opacity: 1
+     * 2. 确保浏览器有足够时间渲染 loading 界面
+     */
+    function showLoading(stage = '准备中', percent = 0) {
+      const overlay = document.getElementById('loadingOverlay');
+      const progressBar = document.getElementById('progressBar');
+      const progressStage = document.getElementById('progressStage');
+      const progressPercent = document.getElementById('progressPercent');
+
+      if (overlay) {
+        // v6.6 修复：显式设置 display 和 opacity，确保立即可见
+        overlay.style.display = 'flex';
+        overlay.style.opacity = '1';
+        overlay.classList.add('active');
+      }
+      if (progressBar) progressBar.style.width = percent + '%';
+      if (progressStage) progressStage.textContent = stage;
+      if (progressPercent) progressPercent.textContent = Math.round(percent) + '%';
+    }
+
+    function updateLoading(stage, percent) {
+      const progressBar = document.getElementById('progressBar');
+      const progressStage = document.getElementById('progressStage');
+      const progressPercent = document.getElementById('progressPercent');
+      if (progressBar) progressBar.style.width = percent + '%';
+      if (progressStage) progressStage.textContent = stage;
+      if (progressPercent) progressPercent.textContent = Math.round(percent) + '%';
+    }
+
+    function hideLoading() {
+      const overlay = document.getElementById('loadingOverlay');
+      if (!overlay) return;
+      // 确保 loading 至少显示 300ms，避免绘制太快看不到
+      setTimeout(() => {
+        overlay.classList.remove('active');
+        overlay.style.opacity = '0';
+        setTimeout(() => {
+          if (!overlay.classList.contains('active')) {
+            overlay.style.display = 'none';
+          }
+        }, 350);
+      }, 300);
+    }
+
+    /**
+     * v6.6 修复：scheduleRedraw 确保加载动画正确显示
+     * 1. 直接调用 showLoading（不是 window.showLoading）
+     * 2. 使用 requestAnimationFrame 给浏览器渲染机会
+     * 3. 确保 showLoading 有足够时间执行
+     */
+    let isDrawing = false;
+    function scheduleRedraw(fn, withLoading = true) {
+      // 防止重复调用
+      if (isDrawing) {
+        console.log('[v6.6] 正在绘制中，跳过此次请求');
+        return;
+      }
+
+      if (withLoading) {
+        // v6.6 修复：直接调用 showLoading（不是 window.showLoading）
+        showLoading('准备中', 0);
+
+        // v6.6 修复：使用双重 requestAnimationFrame 确保 loading 显示
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            isDrawing = true;
+            try {
+              fn();
+            } finally {
+              isDrawing = false;
+            }
+          });
+        });
+      } else {
+        requestAnimationFrame(() => {
+          isDrawing = true;
+          try {
+            fn();
+          } finally {
+            isDrawing = false;
+          }
+        });
+      }
+    }
+
+    // ==================== 主绘制函数 ====================
+    function fullRedraw() {
+      // v6.7 修复：fullRedraw 开头显示加载页面（toggleBackground 等直接调用也会显示）
+      showLoading('准备中', 0);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          _fullRedrawCore();
+        });
+      });
+    }
+
+    function _fullRedrawCore() {
+      // v6.6 修复：检查数据是否已加载
+      if (HUBUlocation.length === 0) {
+        console.warn('[v6.6] 数据尚未加载，跳过绘制');
+        hideLoading();
+        return;
+      }
+
+      // v6.4 词云固定模式：每次绘制时
+      freezeWordcloudEnabled = document.getElementById('freezeWordcloudToggle')?.checked ?? false;
+      if (freezeWordcloudEnabled && !frozenWordcloudData) {
+        // 首次勾选：保存当前词云数据（只在第一次绘制时保存）
+        frozenWordcloudData = { HUBUlocation: JSON.parse(JSON.stringify(HUBUlocation)) };
+      } else if (!freezeWordcloudEnabled && frozenWordcloudData) {
+        // 取消勾选：清除冻结数据，下次随机
+        frozenWordcloudData = null;
+      }
+      // 固定模式且有冻结数据时，恢复冻结的数据
+      if (freezeWordcloudEnabled && frozenWordcloudData) {
+        HUBUlocation = JSON.parse(JSON.stringify(frozenWordcloudData.HUBUlocation));
+      }
+
+      const maxWordsInput = document.getElementById('maxWordsInput');
+      let maxWordsPerLayer = parseInt(maxWordsInput?.value) || 30;
+      const layerPaddingInput = document.getElementById('layerPaddingInput');
+      const LAYER_PADDING = parseInt(layerPaddingInput?.value) || 0;
+
+      // 读取螺旋参数（供词排布 + 内陷检测共用）
+      const spiralRatio = parseFloat(document.getElementById('spiralRatio')?.value) || 1.6;
+      const spiralStep = parseFloat(document.getElementById('spiralStep')?.value) || 0.15;
+      const spiralB = parseFloat(document.getElementById('spiralB')?.value) || 0.25;
+
+      updateLoading('初始化画布', 5);
+
+      d3.select("svg").selectAll("*").remove();
+
+      if (isochroneTimes.length === 0) { drawNoIsochrone(); hideLoading(); return; }
+
+      updateLoading('计算画布尺寸', 8);
+
+      const sortedTimes = [...isochroneTimes].sort((a, b) => a - b);
+      const maxTime = Math.max(...sortedTimes, d3.max(HUBUlocation, d => d.time) || 120);
+      const baseSize = 1600;
+      const sizeMultiplier = 1 + (sortedTimes.length - 1) * 0.7;
+      let width = Math.max(baseSize, baseSize * sizeMultiplier + maxTime * 15);
+      let height = Math.max(1200, 1200 * sizeMultiplier + maxTime * 11);
+
+      updateLoading('构建 SVG 容器', 12);
+
+      const svg = d3.select("svg").attr("width", width).attr("height", height);
+      const center = [width / 2, height / 2];
+      const gCanvas = svg.append("g").attr("class", "zoom-layer");
+
+      const zoom = d3.zoom().scaleExtent([0.3, 5])
+        .on("zoom", (e) => gCanvas.attr("transform", e.transform));
+      svg.call(zoom).on("dblclick.zoom", null);
+      svg.on("dblclick", () => svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity));
+      svg.call(zoom.transform, d3.zoomIdentity.translate(
+        (document.getElementById('mainCanvas').clientWidth - width) / 2,
+        (document.getElementById('mainCanvas').clientHeight - height) / 2
+      ).scale(1));
+
+      updateLoading('准备词云数据', 15);
+
+      const colors = {
+        "自然景观": currentColors.color1, "休闲娱乐": currentColors.color2,
+        "餐饮美食": currentColors.color3, "购物服务": currentColors.color4,
+        "酒店住宿": currentColors.color5,
+      };
+
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      function calculateTextBoundingBox(text, fontSize) {
+        ctx.font = `${fontSize}px microsoft yahei`;
+        const metrics = ctx.measureText(text);
+        return { width: metrics.width, height: fontSize };
+      }
+
+      const gridSize = width / 2;
+      const grid = new Map();
+      function getGridKey(x, y) { return `${Math.floor(x / gridSize)},${Math.floor(y / gridSize)}`; }
+      function addToGrid(word) {
+        const key = getGridKey(word.x, word.y);
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(word);
+      }
+      function isWordsColliding(w1, w2) {
+        return Math.abs(w1.x - w2.x) < (w1.width + w2.width) / 2 &&
+          Math.abs(w1.y - w2.y) < (w1.height + w2.height) / 2;
+      }
+      function checkCollision(word) {
+        const gx = Math.floor(word.x / gridSize), gy = Math.floor(word.y / gridSize);
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          const key = `${gx + dx},${gy + dy}`;
+          if (grid.has(key)) for (const other of grid.get(key)) if (isWordsColliding(word, other)) return true;
+        }
+        return false;
+      }
+
+      /**
+       * v5.7 新增：根据密度点数量自适应计算KDE参数
+       * @param {number} pointCount - 密度点数量
+       * @param {number} baseBandwidth - 基础bandwidth
+       * @param {number} baseThresholds - 基础threshold数量
+       * @returns {Object} { bandwidth, thresholds }
+       */
+      function adaptiveKDEParams(pointCount, baseBandwidth, baseThresholds) {
+        // 密度越高，bandwidth应该越大，thresholds间隔也应该越大
+        const densityFactor = Math.log10(Math.max(100, pointCount)) / Math.log10(10000);
+        const bandwidthMultiplier = 1 + densityFactor * 0.8;
+        const thresholdMultiplier = 1 + densityFactor * 0.5;
+
+        return {
+          bandwidth: baseBandwidth * bandwidthMultiplier,
+          thresholds: Math.max(10, Math.round(baseThresholds * thresholdMultiplier))
+        };
+      }
+
+      // 使用控制面板的螺旋参数
+      function archimedeanSpiral({ ratio = 1.6, step = 0.15, b = 0.25, a = 0 } = {}) {
+        const e = ratio;
+        return function (t) {
+          return [e * (a + b * (t *= step)) * Math.cos(t), (a + b * t) * Math.sin(t)];
+        };
+      }
+      const posi = archimedeanSpiral({ ratio: spiralRatio, step: spiralStep, b: spiralB, a: 0 });
+
+
+      /**
+       * v5.7 新增：计算等时线在某角度方向的局部曲率
+       * @param {Array} polygon - 等时线多边形点数组
+       * @param {number} theta - 角度（弧度）
+       * @param {number} cx, cy - 中心点
+       * @param {number} ratio - 椭圆比例
+       * @returns {number} 曲率值 (0~1, 0=直线, 1=尖锐弯曲)
+       */
+      function calculateLocalCurvature(polygon, theta, cx, cy, ratio) {
+        // 在归一化空间计算
+        const cx_n = cx / ratio, cy_n = cy;
+        const dx = Math.cos(theta), dy = Math.sin(theta);
+
+        // 找射线与多边形的交点
+        const intersections = [];
+        for (let i = 0; i < polygon.length - 1; i++) {
+          const ax = polygon[i][0] / ratio, ay = polygon[i][1];
+          const bx = polygon[i + 1][0] / ratio, by = polygon[i + 1][1];
+          const ex = bx - ax, ey = by - ay;
+          const denom = dx * ey - dy * ex;
+          if (Math.abs(denom) < 1e-10) continue;
+          const t = ((ax - cx_n) * ey - (ay - cy_n) * ex) / denom;
+          const s = ((ax - cx_n) * dy - (ay - cy_n) * dx) / denom;
+          if (t > 0 && s >= 0 && s <= 1) {
+            intersections.push({ t, angle: theta });
+          }
+        }
+        if (intersections.length === 0) return 1; // 无交点，认为高曲率
+
+        // 找最近交点
+        const nearest = intersections.reduce((a, b) => a.t < b.t ? a : b);
+
+        // 在交点附近采样多点计算局部曲率
+        const delta = 0.15; // 弧度偏移
+        const samples = [-delta, 0, delta];
+        const points = [];
+
+        for (const offset of samples) {
+          const th = theta + offset;
+          const dxx = Math.cos(th), dyy = Math.sin(th);
+          const inters = [];
+          for (let i = 0; i < polygon.length - 1; i++) {
+            const ax = polygon[i][0] / ratio, ay = polygon[i][1];
+            const bx = polygon[i + 1][0] / ratio, by = polygon[i + 1][1];
+            const ex = bx - ax, ey = by - ay;
+            const denom = dxx * ey - dyy * ex;
+            if (Math.abs(denom) < 1e-10) continue;
+            const t = ((ax - cx_n) * ey - (ay - cy_n) * ex) / denom;
+            const s = ((ax - cx_n) * dyy - (ay - cy_n) * dxx) / denom;
+            if (t > 0 && s >= 0 && s <= 1) inters.push(t);
+          }
+          if (inters.length > 0) {
+            const r = Math.min(...inters);
+            points.push({
+              x: cx_n + r * dxx,
+              y: cy_n + r * dyy,
+              r: r
+            });
+          }
+        }
+
+        if (points.length < 3) return 1;
+
+        // 用三点拟合圆，计算曲率
+        const p1 = points[0], p2 = points[1], p3 = points[2];
+        const a = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        const b = Math.hypot(p3.x - p2.x, p3.y - p2.y);
+        const c = Math.hypot(p3.x - p1.x, p3.y - p1.y);
+
+        if (a * b * c < 1e-10) return 1;
+
+        // 曲率 = 1/R，用三角形外接圆半径公式
+        const area = Math.abs((p2.x - p1.x) * (p3.y - p1.y) - (p3.x - p1.x) * (p2.y - p1.y)) / 2;
+        const R = (a * b * c) / (4 * area + 1e-10);
+        const curvature = Math.min(1, 50 / R); // 归一化到 0~1
+
+        return curvature;
+      }
+
+      /**
+       * v5.7 新增：计算等时线在某角度方向的局部宽高比
+       * @param {Array} polygon - 等时线多边形点数组  
+       * @param {number} theta - 角度（弧度）
+       * @param {number} windowAngle - 窗口角度范围
+       * @param {number} cx, cy - 中心点
+       * @param {number} ratio - 椭圆比例
+       * @returns {number} 宽高比
+       */
+      function calculateLocalAspectRatio(polygon, theta, windowAngle, cx, cy, ratio) {
+        const cx_n = cx / ratio, cy_n = cy;
+        const angles = [];
+        const numSamples = 20;
+        for (let i = 0; i < numSamples; i++) {
+          angles.push(theta - windowAngle / 2 + (windowAngle * i / numSamples));
+        }
+
+        const radii = [];
+        for (const th of angles) {
+          const dx = Math.cos(th), dy = Math.sin(th);
+          const inters = [];
+          for (let i = 0; i < polygon.length - 1; i++) {
+            const ax = polygon[i][0] / ratio, ay = polygon[i][1];
+            const bx = polygon[i + 1][0] / ratio, by = polygon[i + 1][1];
+            const ex = bx - ax, ey = by - ay;
+            const denom = dx * ey - dy * ex;
+            if (Math.abs(denom) < 1e-10) continue;
+            const t = ((ax - cx_n) * ey - (ay - cy_n) * ex) / denom;
+            const s = ((ax - cx_n) * dy - (ay - cy_n) * dx) / denom;
+            if (t > 0 && s >= 0 && s <= 1) inters.push(t);
+          }
+          if (inters.length > 0) radii.push(Math.min(...inters));
+        }
+
+        if (radii.length < 5) return 1;
+
+        // 计算径向的分布
+        const rMean = radii.reduce((a, b) => a + b, 0) / radii.length;
+        const rMin = Math.min(...radii), rMax = Math.max(...radii);
+
+        // 计算角度方向的跨度（弧长近似）
+        const arcSpan = windowAngle * rMean;
+        const radialSpan = rMax - rMin;
+
+        if (radialSpan < 1) return 1;
+        return arcSpan / radialSpan;
+      }
+
+      // ==================== 几何工具函数 ====================
+
+      function polygonCentroid(poly) {
+        let cx = 0, cy = 0;
+        for (const [x, y] of poly) { cx += x; cy += y; }
+        return [cx / poly.length, cy / poly.length];
+      }
+
+      /**
+       * 射线与多边形的交点（从中心点出发，向角度 theta 方向）
+       * 在"椭圆归一化坐标系"中计算：将 x 坐标除以 ratio，使椭圆变成圆再做射线检测
+       * 
+       * @param {number} cx_orig, cy_orig - 原始坐标系中的中心点
+       * @param {number} theta - 在归一化坐标系中的角度
+       * @param {Array} polygon - 原始坐标系的多边形点数组
+       * @param {number} ratio - 螺旋 X 轴拉伸比
+       * @returns {object|null} { dist, pt } - dist 为归一化空间距离，pt 为原始空间的交点坐标
+       */
+      function rayPolygonIntersectEllipse(cx_orig, cy_orig, theta, polygon, ratio) {
+        // 将中心点变换到归一化空间
+        const cx = cx_orig / ratio;
+        const cy = cy_orig;
+        const dx = Math.cos(theta), dy = Math.sin(theta);
+
+        let minDist = null;
+        let minPtNorm = null;
+
+        for (let i = 0; i < polygon.length - 1; i++) {
+          // 将线段端点变换到归一化空间
+          const ax = polygon[i][0] / ratio, ay = polygon[i][1];
+          const bx = polygon[i + 1][0] / ratio, by = polygon[i + 1][1];
+          const ex = bx - ax, ey = by - ay;
+          const denom = dx * ey - dy * ex;
+          if (Math.abs(denom) < 1e-10) continue;
+          const t = ((ax - cx) * ey - (ay - cy) * ex) / denom;
+          const s = ((ax - cx) * dy - (ay - cy) * dx) / denom;
+          if (t > 0 && s >= 0 && s <= 1) {
+            if (minDist === null || t < minDist) {
+              minDist = t;
+              // 交点在归一化空间
+              minPtNorm = [cx + t * dx, cy + t * dy];
+            }
+          }
+        }
+        if (minDist === null) return null;
+        // 将交点还原到原始坐标空间
+        const ptOrig = [minPtNorm[0] * ratio, minPtNorm[1]];
+        return { dist: minDist, pt: ptOrig };
+      }
+
+      /**
+       * v5.6 核心：椭圆感知的径向环宽内陷检测
+       * 
+       * 关键改进：用螺旋的 ratio 参数将椭圆坐标系归一化为圆形坐标系，
+       * 再做均匀角度采样，确保检测方向与词云排布形状一致。
+       * 
+       * @param {Array} innerPolygon - 内层等时线点数组（原始坐标）
+       * @param {Array} outerPolygon - 外层等时线点数组（原始坐标）
+       * @param {Object} params
+       * @returns {Object|null} { indentRegions, ringWidths, meanWidth, cx, cy }
+       */
+      function detectIndentations(innerPolygon, outerPolygon, params) {
+        const { nAngles, threshold, mergeAngleDeg, ratio,
+          useCurvatureFilter, curvatureThreshold, aspectRatioThreshold,
+          virtualPointStep } = params;
+        const vpStep = virtualPointStep || 12; // 默认网格间距12px
+        const windowAngle = (2 * Math.PI) / nAngles * 3; // 用于宽高比计算的窗口
+        if (!innerPolygon || innerPolygon.length < 3) return null;
+        if (!outerPolygon || outerPolygon.length < 3) return null;
+
+        // 用两条等时线重心的中点作为参考中心（原始坐标）
+        const innerCent = polygonCentroid(innerPolygon);
+        const outerCent = polygonCentroid(outerPolygon);
+        const cx_orig = (innerCent[0] + outerCent[0]) / 2;
+        const cy_orig = (innerCent[1] + outerCent[1]) / 2;
+
+        const dTheta = (2 * Math.PI) / nAngles;
+        const ringWidths = [];
+
+        for (let i = 0; i < nAngles; i++) {
+          const theta = i * dTheta;
+          // 在归一化圆形空间中向 theta 方向射线，找与内/外层等时线的交点
+          const rInnerInfo = rayPolygonIntersectEllipse(cx_orig, cy_orig, theta, innerPolygon, ratio);
+          const rOuterInfo = rayPolygonIntersectEllipse(cx_orig, cy_orig, theta, outerPolygon, ratio);
+
+          if (rInnerInfo && rOuterInfo && rOuterInfo.dist > rInnerInfo.dist) {
+            const w = rOuterInfo.dist - rInnerInfo.dist;
+
+            // v5.7 新增：计算曲率和宽高比
+            let curvature = 1, aspectRatio = 1;
+            if (useCurvatureFilter) {
+              curvature = calculateLocalCurvature(outerPolygon, theta, cx_orig, cy_orig, ratio);
+              aspectRatio = calculateLocalAspectRatio(outerPolygon, theta, windowAngle, cx_orig, cy_orig, ratio);
+            }
+
+            ringWidths.push({
+              idx: i, theta,
+              rInner: rInnerInfo.dist,
+              rOuter: rOuterInfo.dist,
+              width: w,
+              innerPt: rInnerInfo.pt,
+              outerPt: rOuterInfo.pt,
+              curvature,      // v5.7
+              aspectRatio,    // v5.7
+            });
+          } else {
+            ringWidths.push({ idx: i, theta, rInner: null, rOuter: null, width: null, innerPt: null, outerPt: null, curvature: 1, aspectRatio: 1 });
+          }
+        }
+
+        const validWidths = ringWidths.filter(d => d.width !== null).map(d => d.width);
+        if (validWidths.length === 0) return null;
+        const meanWidth = validWidths.reduce((a, b) => a + b, 0) / validWidths.length;
+
+        // v5.7 标记内陷：曲率+宽高比双重过滤
+        const isIndent = ringWidths.map(d => {
+          if (d.width === null) return false;
+          const widthOk = d.width < threshold * meanWidth;
+          if (!useCurvatureFilter) return widthOk;
+          // 曲率过滤：只有接近直线的区域才过滤（曲率小=接近直线）
+          const curvatureOk = d.curvature < curvatureThreshold;
+          // 宽高比过滤：只有狭长区域才过滤
+          const aspectOk = d.aspectRatio > aspectRatioThreshold;
+          // 两者都满足才跳过（不过滤）
+          if (curvatureOk && aspectOk) return false; // 平行狭长区，不过滤
+          return widthOk;
+        });
+
+        // 合并相邻内陷区域（容忍小间隙）
+        const mergeSteps = Math.max(1, Math.round((mergeAngleDeg / 360) * nAngles));
+        const merged = [...isIndent];
+        for (let gap = 1; gap <= mergeSteps; gap++) {
+          for (let i = 0; i < nAngles; i++) {
+            if (merged[i] && merged[(i + gap) % nAngles]) {
+              for (let k = 1; k < gap; k++) merged[(i + k) % nAngles] = true;
+            }
+          }
+        }
+
+        // 提取连续内陷区段
+        const indentRegions = [];
+        let inRegion = false;
+        let regionStart = -1;
+
+        function buildRegion(segIndices) {
+          const segData = segIndices.map(k => ringWidths[k]).filter(d => d.width !== null);
+          if (segData.length === 0) return null;
+          const deepest = segData.reduce((a, b) => b.width < a.width ? b : a);
+          const midAngle = segData[Math.floor(segData.length / 2)].theta;
+          return {
+            angleStart: ringWidths[segIndices[0]].theta,
+            angleEnd: ringWidths[segIndices[segIndices.length - 1]].theta,
+            angleMid: midAngle,
+            widthRatio: deepest.width / meanWidth,
+            innerPt: deepest.innerPt,
+            outerPt: deepest.outerPt,
+            meanWidth,
+            deepestWidth: deepest.width,
+            segData,
+          };
+        }
+
+        for (let i = 0; i <= nAngles; i++) {
+          const cur = merged[i % nAngles];
+          if (cur && !inRegion) {
+            inRegion = true; regionStart = i;
+          } else if ((!cur || i === nAngles) && inRegion) {
+            inRegion = false;
+            const segIndices = [];
+            for (let k = regionStart; k < i; k++) segIndices.push(k % nAngles);
+            const region = buildRegion(segIndices);
+            if (region) indentRegions.push(region);
+          }
+        }
+        // 处理首尾相连的内陷区段
+        if (inRegion) {
+          let end = 0;
+          while (end < nAngles && merged[end]) end++;
+          const segIndices = [];
+          for (let k = regionStart; k < nAngles; k++) segIndices.push(k);
+          for (let k = 0; k < end; k++) segIndices.push(k);
+          const region = buildRegion(segIndices);
+          if (region) indentRegions.push(region);
+        }
+
+        // v6.1 生成虚拟点 - 在内陷区域生成密集网格点
+        const virtualPoints = [];
+        // 将内外层多边形首尾点闭合，d3.polygonContains 需要闭合多边形
+        const innerClosed = innerPolygon.length > 2
+          ? [...innerPolygon, innerPolygon[0]] : innerPolygon;
+        const outerClosed = outerPolygon.length > 2
+          ? [...outerPolygon, outerPolygon[0]] : outerPolygon;
+
+        for (const region of indentRegions) {
+          const segData = region.segData || [];
+          if (segData.length < 2) continue;
+
+          // 计算内陷区域的边界框（所有采样点的内外层交点）
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const d of segData) {
+            for (const pt of [d.innerPt, d.outerPt]) {
+              if (pt) {
+                minX = Math.min(minX, pt[0]); minY = Math.min(minY, pt[1]);
+                maxX = Math.max(maxX, pt[0]); maxY = Math.max(maxY, pt[1]);
+              }
+            }
+          }
+
+          // 在边界框内生成网格点，严格检测是否在环状区域内
+          const step = vpStep;
+          for (let x = minX; x <= maxX; x += step) {
+            for (let y = minY; y <= maxY; y += step) {
+              const p = [x, y];
+              // 点必须在外层等时线内 且 在内层等时线外（才在环间区域）
+              const inOuter = d3.polygonContains(outerClosed, p);
+              const inInner = d3.polygonContains(innerClosed, p);
+              if (inOuter && !inInner) {
+                virtualPoints.push(p);
+              }
+            }
+          }
+        }
+
+        return { indentRegions, ringWidths, meanWidth, cx: cx_orig, cy: cy_orig, virtualPoints };
+      }
+
+      /**
+       * v5.6 可视化：绘制内陷检测结果
+       */
+      function drawIndentDetect(gCanvas, innerPolygon, outerPolygon, params) {
+        const {
+          nAngles, threshold, mergeAngleDeg, ratio,
+          showRays, showWidthChart,
+          useCurvatureFilter, curvatureThreshold, aspectRatioThreshold,
+          labelPlaceRatio,
+          showDebugInfo,   // v6.2: 是否显示调试辅助信息
+        } = params;
+
+        const result = detectIndentations(innerPolygon, outerPolygon, {
+          nAngles, threshold, mergeAngleDeg, ratio,
+          useCurvatureFilter, curvatureThreshold, aspectRatioThreshold,
+          virtualPointStep: params.virtualPointStep,
+        });
+        if (!result) return null;
+        const { indentRegions, ringWidths, meanWidth, cx, cy } = result;
+
+        const g = gCanvas.append("g").attr("class", "indent-detect-layer");
+
+        // ===== 以下是辅助调试信息，受 showDebugInfo 开关控制 =====
+        if (showDebugInfo) {
+          // ------ 可选：绘制采样射线 ------
+          if (showRays) {
+            const rayG = g.append("g").attr("class", "ray-lines");
+            for (const d of ringWidths) {
+              if (!d.innerPt || !d.outerPt) continue;
+              const isIndentSample = d.width < threshold * meanWidth;
+              rayG.append("line")
+                .attr("x1", d.innerPt[0]).attr("y1", d.innerPt[1])
+                .attr("x2", d.outerPt[0]).attr("y2", d.outerPt[1])
+                .attr("stroke", isIndentSample ? "rgba(231,76,60,0.5)" : "rgba(100,149,237,0.2)")
+                .attr("stroke-width", isIndentSample ? 1.5 : 0.8)
+                .attr("pointer-events", "none");
+            }
+          }
+
+          // ------ 可选：极坐标环宽折线图 ------
+          if (showWidthChart) {
+            const chartG = g.append("g").attr("class", "width-chart");
+            const validW = ringWidths.filter(d => d.width !== null).map(d => d.width);
+            const maxW = Math.max(...validW);
+            const scale = 60 / maxW;
+
+            const validRings = ringWidths.filter(d => d.outerPt !== null);
+            const chartPts = validRings.map(d => {
+              const vx = d.outerPt[0] - cx, vy = d.outerPt[1] - cy;
+              const vLen = Math.hypot(vx, vy);
+              if (vLen < 1e-6) return d.outerPt;
+              const ext = d.width * scale;
+              return [
+                d.outerPt[0] + (vx / vLen) * ext,
+                d.outerPt[1] + (vy / vLen) * ext,
+              ];
+            });
+
+            if (chartPts.length > 2) {
+              const lineGen = d3.line().x(d => d[0]).y(d => d[1])
+                .curve(d3.curveCatmullRomClosed.alpha(0.5));
+              chartG.append("path")
+                .datum(chartPts)
+                .attr("d", lineGen)
+                .attr("fill", "none")
+                .attr("stroke", "rgba(39,174,96,0.6)")
+                .attr("stroke-width", 1.5)
+                .attr("stroke-dasharray", "4,3")
+                .attr("pointer-events", "none");
+
+              const meanPts = validRings.map(d => {
+                const vx = d.outerPt[0] - cx, vy = d.outerPt[1] - cy;
+                const vLen = Math.hypot(vx, vy);
+                if (vLen < 1e-6) return d.outerPt;
+                const ext = meanWidth * scale;
+                return [d.outerPt[0] + (vx / vLen) * ext, d.outerPt[1] + (vy / vLen) * ext];
+              });
+              chartG.append("path")
+                .datum(meanPts)
+                .attr("d", lineGen)
+                .attr("fill", "none")
+                .attr("stroke", "rgba(39,174,96,0.35)")
+                .attr("stroke-width", 1)
+                .attr("stroke-dasharray", "6,4")
+                .attr("pointer-events", "none");
+            }
+          }
+        } // end showDebugInfo
+
+        // ===== 内陷检测可视化（全部受 showDebugInfo 控制）=====
+        if (showDebugInfo) {
+          const indentG = g.append("g").attr("class", "indent-regions");
+
+          for (const region of indentRegions) {
+            const segData = region.segData;
+            if (segData.length >= 2) {
+              const pts = [];
+              for (const d of segData) { if (d.outerPt) pts.push(d.outerPt); }
+              for (const d of [...segData].reverse()) { if (d.innerPt) pts.push(d.innerPt); }
+              if (pts.length >= 3) {
+                const areaPath = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveLinearClosed);
+                indentG.append("path")
+                  .datum(pts)
+                  .attr("d", areaPath)
+                  .attr("fill", "rgba(231,76,60,0.12)")
+                  .attr("stroke", "rgba(231,76,60,0.5)")
+                  .attr("stroke-width", 1)
+                  .attr("pointer-events", "none");
+              }
+            }
+
+            // ===== 虚拟词标签、最深内陷点标记 =====
+            if (region.innerPt && region.outerPt) {
+              const [ix, iy] = region.innerPt;
+              const [ox, oy] = region.outerPt;
+              const ratio_place = params.labelPlaceRatio ?? 1;
+              const lx = ix + ratio_place * (ox - ix);
+              const ly = iy + ratio_place * (oy - iy);
+
+              indentG.append("rect")
+                .attr("rx", 4).attr("ry", 4)
+                .attr("fill", "rgba(231,76,60,0.15)")
+                .attr("stroke", "#e74c3c")
+                .attr("stroke-width", 1.5)
+                .attr("stroke-dasharray", "5,3")
+                .attr("pointer-events", "none");
+
+              indentG.append("text")
+                .attr("x", lx).attr("y", ly)
+                .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+                .attr("font-size", "11px").attr("font-family", "Microsoft YaHei")
+                .attr("fill", "#c0392b").attr("font-weight", "bold")
+                .text(`虚拟词 (${(region.widthRatio * 100).toFixed(0)}%)`)
+                .attr("pointer-events", "none");
+
+              // 最深内陷点标记
+              indentG.append("circle")
+                .attr("cx", region.innerPt[0]).attr("cy", region.innerPt[1])
+                .attr("r", 5).attr("fill", "#e74c3c").attr("opacity", 0.7)
+                .attr("pointer-events", "none");
+            }
+          }
+        } // end showDebugInfo — 内陷区域红色填充、标签、标记全部受此开关控制
+
+        console.log(`[v6.2 椭圆感知内陷检测] ratio=${ratio}, 发现 ${indentRegions.length} 个内陷区域, 生成 ${result.virtualPoints?.length || 0} 个虚拟点, 调试信息: ${showDebugInfo ? '开' : '关'}`);
+        indentRegions.forEach((r, i) => {
+          console.log(`  内陷#${i + 1}: 中心角 ${(r.angleMid * 180 / Math.PI).toFixed(1)}°, ` +
+            `环宽比 ${(r.widthRatio * 100).toFixed(0)}%, 深度 ${r.deepestWidth.toFixed(1)} / 均值${r.meanWidth.toFixed(1)}`);
+        });
+
+        return result;
+      }
+
+      // ==================== 其他工具函数 ====================
+      function generateSpiralPoints(maxR, getPosi, start = [0, 0]) {
+        const pts = [];
+        let t = 0;
+        while (t < 50000) {
+          t += 1;
+          const dxdy = getPosi(t);
+          if (!dxdy) break;
+          const r = Math.sqrt(dxdy[0] * dxdy[0] + dxdy[1] * dxdy[1]);
+          if (r > maxR) break;
+          pts.push({ x: dxdy[0], y: dxdy[1], angle: (Math.atan2(dxdy[1], dxdy[0]) * 180) / Math.PI });
+        }
+        return pts;
+      }
+
+      /**
+       * v6.3 新增：生成扇区优先的螺旋候选点序列
+       * 将螺旋点按"扇区内 / 扇区外"分两组，按 sectorWeight 比例交错排列，
+       * 使扇区内的候选点排在前面，优先被词条占用。
+       * 
+       * @param {number} maxR - 最大半径
+       * @param {Function} getPosi - 螺旋函数
+       * @param {Array} start - 起始偏移
+       * @param {number} centerDeg - 扇区中心角（度，0=正右）
+       * @param {number} halfDeg - 扇区半角宽度（度）
+       * @param {number} sectorWeight - 0~1，扇区候选点在总候选点中的目标占比（权重越高越集中）
+       */
+      function generateSectorPriorityPoints(maxR, getPosi, start = [0, 0], centerDeg = 270, halfDeg = 60, sectorWeight = 0.7) {
+        const allPts = generateSpiralPoints(maxR, getPosi, start);
+
+        // 判断某点是否在扇区内（角度差 ≤ halfDeg）
+        function inSector(pt) {
+          let a = pt.angle - centerDeg;
+          // 归一化到 -180 ~ 180
+          while (a > 180) a -= 360;
+          while (a < -180) a += 360;
+          return Math.abs(a) <= halfDeg;
+        }
+
+        const inside = allPts.filter(p => inSector(p));
+        const outside = allPts.filter(p => !inSector(p));
+
+        if (inside.length === 0) return allPts; // 无扇区内点，退化为普通螺旋
+
+        // 交错排列：每 sectorWeight 份扇区内点 + (1-sectorWeight) 份扇区外点
+        // 简化实现：先放 inside，再放 outside（达到"优先"效果）
+        // 若 sectorWeight < 1，按比例混合
+        const result = [];
+        const ratio = Math.max(0, Math.min(1, sectorWeight));
+
+        if (ratio >= 1) {
+          return [...inside, ...outside];
+        }
+
+        // 按比例交错：每取 1 个 outside 之前先取 ratio/(1-ratio) 个 inside
+        const insidePerBatch = Math.max(1, Math.round(ratio / (1 - ratio)));
+        let ii = 0, oi = 0;
+        while (ii < inside.length || oi < outside.length) {
+          for (let k = 0; k < insidePerBatch && ii < inside.length; k++, ii++) {
+            result.push(inside[ii]);
+          }
+          if (oi < outside.length) result.push(outside[oi++]);
+        }
+        return result;
+      }
+
+      /**
+       * v6.7 新增：计算各类别的扇区角度范围
+       * 按各类别词数比例动态分配扇区角度
+       * v6.8 更新：支持 startAngle 和 totalAngle 参数
+       * @param {Array} words - 词条数组
+       * @param {number} totalAngle - 有效总角度（默认360度）
+       * @param {number} startAngle - 起始角度（默认0度，顺时针增加）
+       * @param {number} gapDeg - 扇区之间的间隔角度
+       * @returns {Object} - { category: {startDeg, endDeg}, ... }
+       */
+      function computeCategorySectors(words, totalAngle = 360, startAngle = 0, gapDeg = 10) {
+        // 统计各类别词数
+        const categoryCount = {};
+        words.forEach(w => {
+          categoryCount[w.category] = (categoryCount[w.category] || 0) + 1;
+        });
+
+        const categories = Object.keys(categoryCount).sort((a, b) => categoryCount[b] - categoryCount[a]);
+        const n = categories.length;
+
+        if (n === 0) return {};
+        if (n === 1) return { [categories[0]]: { startDeg: startAngle, endDeg: startAngle + totalAngle } };
+
+        // 计算每个类别分配的扇区大小（按词数比例）
+        const totalWords = words.length;
+        const availableAngle = totalAngle - gapDeg * (n - 1); // 减去间隔（n个扇区只有n-1个间隔）
+        const sectors = {};
+        let currentAngle = startAngle;
+
+        categories.forEach((cat, i) => {
+          const ratio = categoryCount[cat] / totalWords;
+          const catAngle = Math.max(30, ratio * availableAngle); // 最少30度
+          sectors[cat] = {
+            startDeg: currentAngle,
+            endDeg: currentAngle + catAngle
+          };
+          currentAngle += catAngle + gapDeg;
+        });
+
+        return sectors;
+      }
+
+      /**
+       * v6.7 新增：生成特定类别的扇区螺旋候选点
+       * 只返回在指定扇区角度范围内的螺旋点
+       * @param {string} category - 类别名称
+       * @param {Object} categorySectors - computeCategorySectors 返回的扇区配置
+       * @param {number} maxR - 最大半径
+       * @param {Function} getPosi - 螺旋函数
+       * @param {Array} start - 起始偏移
+       */
+      function generateCategorySectorPoints(category, categorySectors, maxR, getPosi, start = [0, 0]) {
+        const sector = categorySectors[category];
+        if (!sector) return generateSpiralPoints(maxR, getPosi, start);
+
+        const allPts = generateSpiralPoints(maxR, getPosi, start);
+
+        // v6.8 更新：判断点是否在扇区内（支持任意 startAngle）
+        // 将点的角度旋转至以扇区起点为0°，然后检查是否在区间内
+        function isInSector(pt) {
+          const sectorStart = sector.startDeg;
+          const sectorEnd = sector.endDeg;
+          const sectorSpan = sectorEnd - sectorStart; // 扇区跨度
+
+          // 归一化点到 [sectorStart, sectorStart + sectorSpan]
+          let a = pt.angle;
+          while (a < sectorStart) a += 360;
+          while (a > sectorStart + sectorSpan) a -= 360;
+
+          // 检查是否在区间内
+          return a >= sectorStart && a <= sectorStart + sectorSpan;
+        }
+
+        return allPts.filter(p => isInSector(p));
+      }
+
+      function calculateCorners(x = 0, y = 0, padding = 0.5, bbox) {
+        const { width, height } = bbox;
+        return [
+          [x - width / 2, y - height / 2], [x + width / 2, y - height / 2],
+          [x + width / 2, y + height / 2], [x - width / 2, y + height / 2],
+        ];
+      }
+      function addBorderinfo(words) {
+        const corners = words.map(d => calculateCorners(d.x, d.y, d.padding, calculateTextBoundingBox(d.text, d.size)));
+        words.forEach((d, i) => {
+          d.bbox = { x: corners[i][0][0], y: corners[i][0][1], width: corners[i][2][0] - corners[i][0][0], height: corners[i][2][1] - corners[i][0][1] };
+          d.corners = corners[i];
+          d.width = corners[i][2][0] - corners[i][0][0];
+          d.height = corners[i][2][1] - corners[i][0][1];
+        });
+      }
+      function getPolygonBBox(polygon) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const [x, y] of polygon) {
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+        return { minX, minY, maxX, maxY };
+      }
+      function extractOuterRing(contour) {
+        if (!contour || contour.type !== "MultiPolygon" || !contour.coordinates || contour.coordinates.length === 0) return [];
+        return contour.coordinates[0][0];
+      }
+      function getLargestContour(contours) {
+        if (!contours || contours.length === 0) return null;
+        let largest = null, maxArea = 0;
+        for (const contour of contours) {
+          if (!contour || contour.type !== "MultiPolygon" || !contour.coordinates) continue;
+          const poly = extractOuterRing(contour);
+          if (poly.length === 0) continue;
+          const bbox = getPolygonBBox(poly);
+          const area = (bbox.maxX - bbox.minX) * (bbox.maxY - bbox.minY);
+          if (area > maxArea) { maxArea = area; largest = contour; }
+        }
+        return largest;
+      }
+      function extractLongestRingAsPolygon(contour) {
+        if (!contour || !contour.coordinates) return null;
+        let longestRing = null, maxLen = 0;
+        for (const polygon of contour.coordinates) {
+          if (!polygon || polygon.length === 0) continue;
+          const outerRing = polygon[0];
+          if (!outerRing || outerRing.length === 0) continue;
+          let perimeter = 0;
+          for (let i = 1; i < outerRing.length; i++) {
+            perimeter += Math.hypot(outerRing[i][0] - outerRing[i - 1][0], outerRing[i][1] - outerRing[i - 1][1]);
+          }
+          if (perimeter > maxLen) { maxLen = perimeter; longestRing = outerRing; }
+        }
+        if (!longestRing) return null;
+        return { type: "Feature", geometry: { type: "Polygon", coordinates: [longestRing] }, value: contour.value };
+      }
+      function simplifyPolygon(pts, tolerance) {
+        if (pts.length <= 4) return pts;
+        function perpendicularDist(p, a, b) {
+          const dx = b[0] - a[0], dy = b[1] - a[1], lenSq = dx * dx + dy * dy;
+          if (lenSq === 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+          const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq));
+          return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+        }
+        function rdp(points, eps) {
+          if (points.length < 3) return points;
+          let maxD = 0, idx = 0;
+          for (let i = 1; i < points.length - 1; i++) {
+            const d = perpendicularDist(points[i], points[0], points[points.length - 1]);
+            if (d > maxD) { maxD = d; idx = i; }
+          }
+          if (maxD > eps) {
+            return rdp(points.slice(0, idx + 1), eps).slice(0, -1).concat(rdp(points.slice(idx), eps));
+          }
+          return [points[0], points[points.length - 1]];
+        }
+        return rdp(pts, tolerance);
+      }
+      function appendSmoothedContour(parentG, ringPoints, strokeColor, strokeWidth = 2, fillOpacity = 0) {
+        if (!ringPoints || ringPoints.length < 4) return null;
+        const simplified = simplifyPolygon(ringPoints, 3);
+        const smoothLine = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveCatmullRomClosed.alpha(0.5));
+        return parentG.append("path").datum(simplified)
+          .attr("d", smoothLine)
+          .style("fill", "skyblue").style("fill-opacity", fillOpacity)
+          .style("stroke", strokeColor).style("stroke-width", strokeWidth)
+          .style("stroke-linejoin", "round").style("stroke-linecap", "round");
+      }
+      function minDistToPolygon(px, py, polygon) {
+        let minD = Infinity;
+        for (let i = 0; i < polygon.length - 1; i++) {
+          const [ax, ay] = polygon[i], [bx, by] = polygon[i + 1];
+          const dx = bx - ax, dy = by - ay, lenSq = dx * dx + dy * dy;
+          if (lenSq === 0) continue;
+          const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+          const d = Math.hypot(ax + t * dx - px, ay + t * dy - py);
+          if (d < minD) minD = d;
+        }
+        return minD;
+      }
+      function linePolygonIntersect(line, polygon) {
+        const [A, B] = line;
+        for (let i = 0; i < polygon.length; i++) {
+          const C = polygon[i], D = polygon[(i + 1) % polygon.length];
+          const denom = (B[0] - A[0]) * (D[1] - C[1]) - (B[1] - A[1]) * (D[0] - C[0]);
+          if (denom === 0) continue;
+          const t = ((C[0] - A[0]) * (D[1] - C[1]) - (C[1] - A[1]) * (D[0] - C[0])) / denom;
+          const u = -((A[0] - C[0]) * (B[1] - A[1]) - (A[1] - C[1]) * (B[0] - A[0])) / denom;
+          if (t >= 0 && t <= 1 && u >= 0 && u <= 1) return [A[0] + t * (B[0] - A[0]), A[1] + t * (B[1] - A[1])];
+        }
+        return null;
+      }
+      function getTangentAngleAtPoint(pathNode, x, y, samples = 200) {
+        let pathLength = pathNode.getTotalLength();
+        let bestL = 0, minDist = Infinity;
+        for (let i = 0; i <= samples; i++) {
+          let l = (pathLength * i) / samples, p = pathNode.getPointAtLength(l);
+          let dist = (x - p.x) ** 2 + (y - p.y) ** 2;
+          if (dist < minDist) { minDist = dist; bestL = l; }
+        }
+        let p1 = pathNode.getPointAtLength(bestL);
+        let p2 = pathNode.getPointAtLength(Math.min(bestL + 1, pathLength));
+        return (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
+      }
+      /**
+       * v6.3 增强：支持旋转模式（tangent / horizontal / radial）
+       * @param {number} radialAngle - 射线角度（度），仅 radial 模式使用
+       */
+      function addTimeLabel(svg, x, y, text, tangentAngle, sunMode, fontSize = 15, rotMode = 'tangent', radialAngle = 0) {
+        const group = svg.append("g");
+        const t = group.append("text").text(text)
+          .attr("text-anchor", "middle").attr("dominant-baseline", "central").attr("dy", "0.3em")
+          .attr("fill", sunMode ? "#4A6FA5" : "#7BA3D9").attr("font-size", `${fontSize}px`).attr("font-weight", "bold");
+        const bbox = t.node().getBBox();
+        group.insert("rect", "text")
+          .attr("fill", sunMode ? "#F5F7FA" : "#2A2A3A")
+          .attr("x", bbox.x).attr("y", bbox.y).attr("width", bbox.width).attr("height", bbox.height);
+
+        let displayAngle;
+        if (rotMode === 'horizontal') {
+          displayAngle = 0;
+        } else if (rotMode === 'radial') {
+          // 射线角度，保持文字正向（防翻转）
+          let a = radialAngle % 360;
+          if (a > 90 || a < -90) a += 180;
+          displayAngle = a;
+        } else {
+          // tangent（默认）
+          displayAngle = tangentAngle > 90 || tangentAngle < -50 ? tangentAngle + 180 : tangentAngle;
+        }
+
+        group.attr("transform", `translate(${x},${y}) rotate(${displayAngle})`);
+        const labelSize = Math.max(bbox.width, bbox.height) + 12;
+        const labelOccupier = { x: x - center[0], y: y - center[1], width: labelSize, height: labelSize };
+        addToGrid(labelOccupier);
+        placedWords.push(labelOccupier);
+      }
+      /**
+       * v6.3 重构：支持可配置角度列表、旋转模式、径向偏移
+       */
+      function addTimeLabelsForContour(gCanvas, contour, pathNode, timeValue, width, height, center, sunMode) {
+        if (!contour || !contour.coordinates || contour.coordinates.length === 0) return;
+        const polygon = contour.coordinates[0][0];
+
+        // ── 读取 UI 参数 ──
+        const anglesRaw = (document.getElementById('timeLabelAngles')?.value || '').trim();
+        const rotMode = document.getElementById('timeLabelRotMode')?.value || 'tangent';
+        const offsetPx = parseFloat(document.getElementById('timeLabelOffset')?.value) || 0;
+
+        // 解析角度列表；留空则使用默认 8 方向
+        let angleDegList = [];
+        if (anglesRaw.length > 0) {
+          angleDegList = anglesRaw.split(',')
+            .map(s => parseFloat(s.trim()))
+            .filter(v => !isNaN(v));
+        }
+
+        // 默认 8 方向（保持 v6.2 行为）
+        const defaultAngles = [270, 0, 90, 180, 315, 45, 135, 225]; // 上右下左 + 对角
+        if (angleDegList.length === 0) angleDegList = defaultAngles;
+
+        // 构建射线终点：从中心向角度 θ 射出足够长的线段（覆盖画布对角线）
+        const maxR = Math.hypot(width, height);
+        const lines = angleDegList.map(deg => {
+          const rad = (deg * Math.PI) / 180;
+          const ex = center[0] + maxR * Math.cos(rad);
+          const ey = center[1] + maxR * Math.sin(rad);
+          return { deg, line: [center, [ex, ey]] };
+        });
+
+        lines.forEach(({ deg, line }) => {
+          const intersection = linePolygonIntersect(line, polygon);
+          if (!intersection) return;
+
+          let [ix, iy] = intersection;
+
+          // 径向偏移：沿射线方向将标签推离等时线
+          if (offsetPx !== 0) {
+            const rad = (deg * Math.PI) / 180;
+            ix += offsetPx * Math.cos(rad);
+            iy += offsetPx * Math.sin(rad);
+          }
+
+          let tangentAngle = 0;
+          if (pathNode && rotMode === 'tangent') {
+            tangentAngle = getTangentAngleAtPoint(pathNode, intersection[0], intersection[1]);
+          }
+
+          addTimeLabel(gCanvas, ix, iy, `${timeValue} min`, tangentAngle, sunMode, 15, rotMode, deg);
+        });
+      }
+      function rectSamplePoints(cx, cy, halfW, halfH, edgeSamples) {
+        const pts = [], n = edgeSamples + 1;
+        for (let i = 0; i <= n; i++) {
+          const t = i / n;
+          pts.push([cx - halfW + t * halfW * 2, cy - halfH]);
+          pts.push([cx - halfW + t * halfW * 2, cy + halfH]);
+          pts.push([cx - halfW, cy - halfH + t * halfH * 2]);
+          pts.push([cx + halfW, cy - halfH + t * halfH * 2]);
+        }
+        return pts;
+      }
+      function isWordOutsidePolygonFast(polygon, polyBBox, word, padding) {
+        const wordAbsX = word.x + center[0], wordAbsY = word.y + center[1];
+        const halfW = word.width / 2 + padding, halfH = word.height / 2 + padding;
+        let checkBBox = polyBBox;
+        if (padding > 0) checkBBox = { minX: polyBBox.minX - padding, minY: polyBBox.minY - padding, maxX: polyBBox.maxX + padding, maxY: polyBBox.maxY + padding };
+        const rect = { x1: wordAbsX - halfW, y1: wordAbsY - halfH, x2: wordAbsX + halfW, y2: wordAbsY + halfH };
+        if (rect.x2 < checkBBox.minX || rect.x1 > checkBBox.maxX || rect.y2 < checkBBox.minY || rect.y1 > checkBBox.maxY) return true;
+        const samplePts = rectSamplePoints(wordAbsX, wordAbsY, halfW, halfH, 8);
+        for (const pt of samplePts) if (d3.polygonContains(polygon, pt)) return false;
+        if (d3.polygonContains(polygon, [wordAbsX, wordAbsY])) return false;
+        return true;
+      }
+      function generatePoints(word, pointsPerSquarePixel, weight) {
+        const bbox = word.bbox, density = pointsPerSquarePixel * weight;
+        const step = 1 / Math.sqrt(density);
+        const area = bbox.width * bbox.height, pointCount = Math.ceil(area * pointsPerSquarePixel * weight);
+        const points = [];
+        for (let x = bbox.x + step / 2; x <= bbox.x + bbox.width - step / 2; x += step)
+          for (let y = bbox.y + step / 2; y <= bbox.y + bbox.height - step / 2; y += step) points.push([x, y]);
+        if (points.length === 0) points.push([bbox.x + bbox.width / 2, bbox.y + bbox.height / 2]);
+        return points.slice(0, pointCount);
+      }
+
+      // ==================== 开始绘制 ====================
+      let centerLabel = HUBUlocation.find(d => d.text === centerLocation);
+      if (!centerLabel) centerLabel = { text: centerLocation, time: 0, rating: 6, category: "中心" };
+
+      let placedWords = [];
+      window.allPointsAccumulated = null;
+      window.virtualPointsAccumulated = null;  // v6.1 虚拟点累积
+
+      const centerWord = {
+        text: centerLabel.text, size: getFontSize(centerLabel.rating),
+        category: centerLabel.category, rating: centerLabel.rating, time: centerLabel.time,
+        x: 0, y: 0,
+      };
+      const centerBbox = calculateTextBoundingBox(centerWord.text, centerWord.size);
+      centerWord.width = centerBbox.width; centerWord.height = centerBbox.height;
+      placedWords.push(centerWord); addToGrid(centerWord);
+
+      // ========== 第 0 层 ==========
+      const baseWordCount = Math.floor(maxWordsPerLayer * 0.8);
+      const firstTime = sortedTimes[0];
+      // v6.4 固定模式下跳过随机打乱，保持词云组成稳定
+      const layer0Locations = filterBalancedLocations(centerLocation, HUBUlocation, -1, firstTime)
+        .sort((a, b) => freezeWordcloudEnabled ? a.text.localeCompare(b.text) : Math.random() - 0.5)
+        .slice(0, baseWordCount);
+
+      const layer0Words = layer0Locations.map(d => ({
+        text: d.text, size: getFontSize(d.rating), weight: getFontWeight(d.rating),
+        category: d.category, rating: d.rating, time: d.time,
+      })).sort((a, b) => b.rating - a.rating);
+
+      const layer0Group = gCanvas.append("g").attr("transform", `translate(${center[0]},${center[1]})`);
+      layer0Group.selectAll("text").data(layer0Words).enter().append("text")
+        .text(d => d.text).attr("text-anchor", "middle").attr("dominant-baseline", "central")
+        .attr("font-size", d => d.size).attr("font-family", "Microsoft Yahei")
+        .attr("fill", d => colors[d.category]).attr("opacity", 0);
+
+      // v6.7 扇区聚类模式：按类别分配扇区，同类词在指定扇区内螺旋摆放
+      // v6.8 更新：读取扇区参数（总角度、起始角度、扇区间隔）
+      const sectorClusterEnabled = document.getElementById('sectorClusterToggle')?.checked ?? false;
+      let categorySectors = {};
+      if (sectorClusterEnabled) {
+        const totalAngle = parseFloat(document.getElementById('sectorTotalAngle')?.value) || 360;
+        const startAngle = parseFloat(document.getElementById('sectorStartAngle')?.value) || 0;
+        const gapDeg = parseFloat(document.getElementById('sectorGap')?.value) || 10;
+        categorySectors = computeCategorySectors(layer0Words, totalAngle, startAngle, gapDeg);
+      }
+
+      // v6.7: 按类别分组，每组按rating排序（保持聚类特性）
+      const categoryGroups = {};
+      layer0Words.forEach(w => {
+        if (!categoryGroups[w.category]) categoryGroups[w.category] = [];
+        categoryGroups[w.category].push(w);
+      });
+      Object.values(categoryGroups).forEach(g => g.sort((a, b) => b.rating - a.rating));
+
+      // 按类别顺序排列（词多的类别优先）
+      const sortedCategories = Object.keys(categoryGroups).sort((a, b) => categoryGroups[b].length - categoryGroups[a].length);
+      let wordsToPlace = [];
+      sortedCategories.forEach(cat => {
+        wordsToPlace.push(...categoryGroups[cat]);
+      });
+
+      // 为每个类别维护独立的扇区螺旋点索引
+      const categoryPointIndex = {};
+      sortedCategories.forEach(cat => {
+        categoryPointIndex[cat] = 0;
+      });
+
+      wordsToPlace.forEach((word) => {
+        const bbox = calculateTextBoundingBox(word.text, word.size);
+        word.width = bbox.width; word.height = bbox.height;
+
+        // v6.7: 根据类别选择扇区螺旋点
+        let points;
+        if (sectorClusterEnabled && categorySectors[word.category]) {
+          points = generateCategorySectorPoints(word.category, categorySectors, width * 2, posi, [0, 0]);
+        } else {
+          points = generateSpiralPoints(width, posi);
+        }
+
+        for (let i = 0; i < points.length; i++) {
+          word.x = points[i].x; word.y = points[i].y;
+          if (!checkCollision(word)) {
+            placedWords.push({ ...word }); addToGrid(word);
+            layer0Group.append("text").text(word.text)
+              .attr("x", word.x).attr("y", word.y)
+              .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+              .attr("font-size", `${word.size}px`).attr("font-weight", `${word.weight}`)
+              .attr("font-family", "Microsoft Yahei").attr("fill", colors[word.category]).attr("opacity", 0.9);
+            break;
+          }
+        }
+      });
+      addBorderinfo(layer0Words);
+
+      layer0Group.append("text").text(centerLabel.text)
+        .attr("x", 0).attr("y", 0).attr("text-anchor", "middle").attr("dominant-baseline", "central")
+        .attr("font-size", "100px").attr("font-weight", "bold").attr("font-family", "Microsoft Yahei")
+        .attr("fill", currentColors.color_center)
+        .style("text-shadow", sunMode ? "0 0 15px rgba(0,119,182,0.2)" : "0 0 15px rgba(255,255,255,0.3)")
+        .style("animation", "pulse 2s linear infinite");
+
+      const pointsPerSquarePixel = 0.1, weight = 2;
+      const pointData0 = layer0Words.map(d => ({ text: d.text, points: generatePoints(d, pointsPerSquarePixel, weight) }));
+      const pointData0Flat = pointData0.map(d => d.points).flat().map(d => [d[0] + center[0], d[1] + center[1]]);
+
+      // v5.7 精细度参数(手动)
+      const bw0 = parseFloat(document.getElementById('kdeBandwidth')?.value) || 30;
+      const th0 = parseInt(document.getElementById('kdeThresholds')?.value) || 60;
+      const contour0 = d3.contourDensity().x(d => d[0]).y(d => d[1])
+        .size([width, height]).weight(1).cellSize(5)
+        .bandwidth(bw0).thresholds(th0);
+      const contours0 = contour0(pointData0Flat);
+
+      const drawContour0 = extractLongestRingAsPolygon(contours0[0]);
+      let contourPath0 = null;
+      if (drawContour0) {
+        const ring0 = drawContour0.geometry.coordinates[0];
+        contourPath0 = appendSmoothedContour(gCanvas, ring0, sunMode ? "#A7D8FF" : "#5DA8FF", 2, 0);
+        addTimeLabelsForContour(gCanvas, contours0[0], contourPath0?.node(), firstTime, width, height, center, sunMode);
+      }
+
+      // ========== 外层循环 ==========
+      const layerCount = sortedTimes.length - 1;
+      let contoursPrev = contours0;
+      const layerContours = [contours0];
+
+      for (let li = 0; li < layerCount; li++) {
+        const timeMin = sortedTimes[li], timeMax = sortedTimes[li + 1];
+        const progress = (li + 1) / layerCount;
+        const layerMultiplier = 0.6 + progress * 1.4;
+        const layerWordCount = Math.floor(maxWordsPerLayer * layerMultiplier);
+
+        updateLoading(`处理第 ${li + 1} / ${layerCount} 层等时线`, 15 + progress * 70);
+
+        const layerLocations = filterBalancedLocations(centerLocation, HUBUlocation, timeMin, timeMax)
+          .sort((a, b) => freezeWordcloudEnabled ? a.text.localeCompare(b.text) : Math.random() - 0.5)
+          .slice(0, layerWordCount);
+
+        const layerWords = layerLocations.map(d => ({
+          text: d.text, size: getFontSize(d.rating), weight: getFontWeight(d.rating),
+          category: d.category, rating: d.rating, time: d.time,
+        })).sort((a, b) => b.rating - a.rating);
+
+        const layerGroup = gCanvas.append("g").attr("transform", `translate(${center[0]},${center[1]})`);
+        layerGroup.selectAll("text").data(layerWords).enter().append("text")
+          .text(d => d.text).attr("text-anchor", "middle").attr("dominant-baseline", "central")
+          .attr("font-size", d => d.size).attr("font-family", "Microsoft Yahei")
+          .attr("fill", d => colors[d.category]).attr("opacity", 0);
+        addBorderinfo(layerWords);
+
+        const prevContours = li === 0 ? contours0 : contoursPrev;
+        const contourPolygon = extractOuterRing(prevContours[0]);
+        const contourBBox = getPolygonBBox(contourPolygon);
+
+        // ── v6.3 扇区优先螺旋点（仅当未开启扇区聚类时生效）──
+        const sectorEnabled = !sectorClusterEnabled && (document.getElementById('sectorModeToggle')?.checked ?? false);
+        const sectorCenterDeg = parseFloat(document.getElementById('sectorCenterAngle')?.value) || 270;
+        const sectorHalfDeg = parseFloat(document.getElementById('sectorHalfAngle')?.value) || 60;
+        const sectorWt = parseFloat(document.getElementById('sectorWeight')?.value) || 0.7;
+
+        // v6.7 扇区聚类：计算外层的类别扇区
+        // v6.8 更新：读取扇区参数（总角度、起始角度、扇区间隔）
+        let layerCategorySectors = {};
+        if (sectorClusterEnabled) {
+          const totalAngle = parseFloat(document.getElementById('sectorTotalAngle')?.value) || 360;
+          const startAngle = parseFloat(document.getElementById('sectorStartAngle')?.value) || 0;
+          const gapDeg = parseFloat(document.getElementById('sectorGap')?.value) || 10;
+          layerCategorySectors = computeCategorySectors(layerWords, totalAngle, startAngle, gapDeg);
+        }
+
+        // v6.7: 按类别分组
+        const layerCategoryGroups = {};
+        layerWords.forEach(w => {
+          if (!layerCategoryGroups[w.category]) layerCategoryGroups[w.category] = [];
+          layerCategoryGroups[w.category].push(w);
+        });
+        Object.values(layerCategoryGroups).forEach(g => g.sort((a, b) => b.rating - a.rating));
+
+        // 按类别顺序排列
+        const layerSortedCategories = Object.keys(layerCategoryGroups).sort((a, b) => layerCategoryGroups[b].length - layerCategoryGroups[a].length);
+        let layerWordsToPlace = [];
+        layerSortedCategories.forEach(cat => {
+          layerWordsToPlace.push(...layerCategoryGroups[cat]);
+        });
+
+        // 为每个类别维护独立的扇区螺旋点索引
+        const layerCategoryPointIndex = {};
+        layerSortedCategories.forEach(cat => {
+          layerCategoryPointIndex[cat] = 0;
+        });
+
+        layerWordsToPlace.forEach((word) => {
+          const bbox = calculateTextBoundingBox(word.text, word.size);
+          word.width = bbox.width; word.height = bbox.height;
+
+          // v6.7: 根据类别选择扇区螺旋点
+          let layerPoints;
+          if (sectorClusterEnabled && layerCategorySectors[word.category]) {
+            layerPoints = generateCategorySectorPoints(word.category, layerCategorySectors, width * 2, posi, [0, 0]);
+          } else if (sectorEnabled) {
+            layerPoints = generateSectorPriorityPoints(width * 2, posi, [0, 0], sectorCenterDeg, sectorHalfDeg, sectorWt);
+          } else {
+            layerPoints = generateSpiralPoints(width * 2, posi, [0, 0]);
+          }
+
+          for (let i = 0; i < layerPoints.length; i++) {
+            word.x = layerPoints[i].x; word.y = layerPoints[i].y;
+            if (isWordOutsidePolygonFast(contourPolygon, contourBBox, word, LAYER_PADDING) && !checkCollision(word)) {
+              placedWords.push({ ...word }); addToGrid(word);
+              layerGroup.append("text").text(word.text)
+                .attr("x", word.x).attr("y", word.y)
+                .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+                .attr("font-size", `${word.size}px`).attr("font-weight", `${word.weight}`)
+                .attr("font-family", "Microsoft Yahei").attr("fill", colors[word.category]).attr("opacity", 0.9);
+              break;
+            }
+          }
+        });
+        addBorderinfo(layerWords);
+
+        const pointDataLayer = layerWords.map(d => ({ text: d.text, points: generatePoints(d, pointsPerSquarePixel, weight) }));
+        const pointDataLayerFlat = pointDataLayer.map(d => d.points).flat().map(d => [d[0] + center[0], d[1] + center[1]]);
+
+        if (!window.allPointsAccumulated) window.allPointsAccumulated = [...pointData0Flat];
+        window.allPointsAccumulated = window.allPointsAccumulated.concat(pointDataLayerFlat);
+
+        const prevPolygon = extractOuterRing(prevContours[1]);
+
+        // ===== v6.1 两阶段KDE计算 =====
+        // 阶段1：用真实数据 + 已累积虚拟点 + 上一条等时线边界 计算初始等时线
+        const virtualPts = window.virtualPointsAccumulated || [];
+        const allPointsWithPoly = window.allPointsAccumulated.concat(prevPolygon).concat(virtualPts);
+
+        const bwL = parseFloat(document.getElementById('kdeBandwidth')?.value) || 30;
+        const thL = parseInt(document.getElementById('kdeThresholds')?.value) || 60;
+        const contourLayer = d3.contourDensity().x(d => d[0]).y(d => d[1])
+          .size([width, height]).weight(1).cellSize(5)
+          .bandwidth(bwL).thresholds(thL);
+        let contoursLayer = contourLayer(allPointsWithPoly);
+
+        // ===== 内陷检测（阶段1结果）=====
+        const indentEnabled = document.getElementById('indentDetectToggle')?.checked ?? true;
+        let newVirtualPts = [];
+
+        if (indentEnabled && prevPolygon && prevPolygon.length > 3) {
+          const outerPolygon = extractOuterRing(contoursLayer[0]);
+          if (outerPolygon && outerPolygon.length > 3) {
+            const nAngles = parseInt(document.getElementById('sampleAngles')?.value) || 180;
+            const threshold = parseFloat(document.getElementById('indentThreshold')?.value) || 0.75;
+            const mergeAngleDeg = parseFloat(document.getElementById('mergeAngleDeg')?.value) || 20;
+            const showRays = document.getElementById('showRaysToggle')?.checked ?? false;
+            const showWidthChart = document.getElementById('showWidthChartToggle')?.checked ?? false;
+            const showVirtualPts = document.getElementById('showVirtualPointsToggle')?.checked ?? true;
+            const showDebugInfo = document.getElementById('showDebugInfoToggle')?.checked ?? false;
+            const useCurvatureFilter = document.getElementById('curvatureFilterToggle')?.checked ?? true;
+            const curvatureThreshold = parseFloat(document.getElementById('curvatureThreshold')?.value) || 0.15;
+            const aspectRatioThreshold = parseFloat(document.getElementById('aspectRatioThreshold')?.value) || 2.0;
+            const labelPlaceRatio = parseFloat(document.getElementById('labelPlaceRatio')?.value) || 1;
+            const vpStep = parseInt(document.getElementById('virtualPointStep')?.value) || 12;
+
+            // 只做检测，不绘制（先拿到虚拟点）
+            const detectResult = detectIndentations(prevPolygon, outerPolygon, {
+              nAngles, threshold, mergeAngleDeg, ratio: spiralRatio,
+              useCurvatureFilter, curvatureThreshold, aspectRatioThreshold,
+              virtualPointStep: vpStep,
+            });
+
+            if (detectResult && detectResult.virtualPoints && detectResult.virtualPoints.length > 0) {
+              newVirtualPts = detectResult.virtualPoints;
+
+              // 累积虚拟点供后续层使用
+              window.virtualPointsAccumulated = (window.virtualPointsAccumulated || []).concat(newVirtualPts);
+              console.log(`[v6.1 两阶段] 层${li + 1}发现 ${detectResult.indentRegions.length} 个内陷区域, 生成 ${newVirtualPts.length} 个虚拟点, 累计 ${window.virtualPointsAccumulated.length}`);
+
+              // ===== 阶段2：用真实数据 + 所有虚拟点(含本轮新增) 重算KDE =====
+              const allPointsWithNewVirtual = window.allPointsAccumulated.concat(prevPolygon).concat(window.virtualPointsAccumulated);
+              contoursLayer = contourLayer(allPointsWithNewVirtual);
+              console.log(`[v6.1 两阶段] 层${li + 1}重算KDE完成，虚拟点总数 ${window.virtualPointsAccumulated.length}`);
+
+              // 绘制内陷检测结果（射线、折线图、高亮）基于修正后的等时线
+              const outerPolygonFixed = extractOuterRing(contoursLayer[0]);
+              if (outerPolygonFixed && outerPolygonFixed.length > 3) {
+                drawIndentDetect(gCanvas, prevPolygon, outerPolygonFixed, {
+                  nAngles, threshold, mergeAngleDeg,
+                  ratio: spiralRatio, showRays, showWidthChart,
+                  useCurvatureFilter, curvatureThreshold, aspectRatioThreshold,
+                  labelPlaceRatio, virtualPointStep: vpStep,
+                  showDebugInfo,
+                });
+              }
+
+              // 绘制虚拟点（红色小点），属于辅助调试信息
+              if (showDebugInfo && showVirtualPts) {
+                const vpGroup = gCanvas.append("g").attr("class", "virtual-points-layer").attr("opacity", 0.7);
+                vpGroup.selectAll("circle").data(newVirtualPts).enter().append("circle")
+                  .attr("cx", d => d[0]).attr("cy", d => d[1])
+                  .attr("r", 3).attr("fill", "#e74c3c")
+                  .attr("pointer-events", "none")
+                  .attr("opacity", 0.5);
+              }
+              console.log(`[v6.2] 生成 ${newVirtualPts.length} 个虚拟点, 可视化: ${showVirtualPts ? '开' : '关'}`);
+            } else {
+              // 无内陷，仍然绘制检测可视化（绿色射线等）
+              drawIndentDetect(gCanvas, prevPolygon, outerPolygon, {
+                nAngles, threshold, mergeAngleDeg,
+                ratio: spiralRatio, showRays, showWidthChart,
+                useCurvatureFilter, curvatureThreshold, aspectRatioThreshold,
+                labelPlaceRatio, virtualPointStep: vpStep,
+                showDebugInfo,
+              });
+            }
+          }
+        }
+
+        contoursPrev = contoursLayer;
+        layerContours.push(contoursLayer);
+
+        // ===== 绘制最终等时线（阶段2结果）=====
+        const largestContour = getLargestContour(contoursLayer);
+        if (largestContour) {
+          const drawContour = extractLongestRingAsPolygon(contoursLayer[1]);
+          if (drawContour) {
+            const ring = drawContour.geometry.coordinates[0];
+            const contourPath = appendSmoothedContour(gCanvas, ring, sunMode ? "#79C1FF" : "#4A90E2", 2, 0);
+            addTimeLabelsForContour(gCanvas, contoursLayer[1], contourPath?.node(), timeMax, width, height, center, sunMode);
+          }
+        }
+      }
+
+      updateLoading('绘制完成', 100);
+      setTimeout(() => { hideLoading(); }, 400);
+    }
+
+    function drawNoIsochrone() {
+      let width = 1200, height = 960;
+      const svg = d3.select("svg").attr("width", width).attr("height", height);
+      const center = [width / 2, height / 2];
+      const gCanvas = svg.append("g").attr("class", "zoom-layer");
+      const zoom = d3.zoom().scaleExtent([0.3, 5]).on("zoom", (e) => gCanvas.attr("transform", e.transform));
+      svg.call(zoom).on("dblclick.zoom", null);
+      svg.on("dblclick", () => svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity));
+      svg.call(zoom.transform, d3.zoomIdentity.translate(
+        (document.getElementById('mainCanvas').clientWidth - width) / 2,
+        (document.getElementById('mainCanvas').clientHeight - height) / 2
+      ).scale(1));
+      let cl = HUBUlocation.find(d => d.text === centerLocation);
+      if (!cl) cl = { text: centerLocation, time: 0, rating: 6, category: "中心" };
+      gCanvas.append("text").text(cl.text)
+        .attr("x", center[0]).attr("y", center[1])
+        .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+        .attr("font-size", "100px").attr("font-weight", "bold").attr("font-family", "Microsoft YaHei")
+        .attr("fill", currentColors.color_center)
+        .style("text-shadow", sunMode ? "0 0 15px rgba(0,119,182,0.2)" : "0 0 15px rgba(255,255,255,0.3)");
+      hideLoading();
+    }
+  </script>
+</body>
+
+</html>
